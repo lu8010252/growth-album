@@ -1,0 +1,435 @@
+'use strict';
+// 成长册 —— 家庭成长记录站。数据全部是普通文件：data/posts/<id>/post.json + files/
+const express = require('express');
+const multer = require('multer');
+const { ZipArchive } = require('archiver');
+const crypto = require('crypto');
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
+const { execFile } = require('child_process');
+
+const PORT = +process.env.PORT || 3000;
+const DATA = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
+const MAX_UPLOAD = (+process.env.MAX_UPLOAD_MB || 2048) * 1024 * 1024;
+const POSTS_DIR = path.join(DATA, 'posts');
+fs.mkdirSync(POSTS_DIR, { recursive: true });
+
+/* ---------- 小工具 ---------- */
+const rand = (n = 6) => crypto.randomBytes(n).toString('hex');
+function readJSON(f, def) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return def; } }
+function writeJSON(f, obj) {
+  const t = f + '.' + process.pid + '.tmp';
+  fs.writeFileSync(t, JSON.stringify(obj, null, 2));
+  fs.renameSync(t, f);
+}
+const F_USERS = path.join(DATA, 'users.json');
+const F_KIDS = path.join(DATA, 'kids.json');
+const F_SET = path.join(DATA, 'settings.json');
+const F_SECRET = path.join(DATA, 'secret.key');
+
+let users = readJSON(F_USERS, []);
+let kids = readJSON(F_KIDS, []);
+let settings = readJSON(F_SET, { title: '成长册' });
+let SECRET;
+try { SECRET = fs.readFileSync(F_SECRET, 'utf8').trim(); } catch { SECRET = rand(32); fs.writeFileSync(F_SECRET, SECRET, { mode: 0o600 }); }
+const saveUsers = () => writeJSON(F_USERS, users);
+const saveKids = () => writeJSON(F_KIDS, kids);
+const saveSettings = () => writeJSON(F_SET, settings);
+
+const KID_COLORS = ['#f2705f', '#4aa8a0', '#e5a23a', '#7c8cf0', '#c46fc0', '#6bb26b'];
+const ROLES = ['admin', 'member', 'viewer', 'child'];
+const IMG_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.avif', '.bmp']);
+const VID_EXT = new Set(['.mp4', '.mov', '.m4v', '.webm', '.3gp', '.mkv', '.avi']);
+
+/* ---------- 密码 / 会话 ---------- */
+function hashPw(pw) { const s = rand(8); return s + ':' + crypto.scryptSync(pw, s, 32).toString('hex'); }
+function checkPw(pw, h) {
+  const [s, k] = String(h || '').split(':'); if (!s || !k) return false;
+  const a = crypto.scryptSync(pw, s, 32), b = Buffer.from(k, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+const sign = (s) => crypto.createHmac('sha256', SECRET).update(s).digest('base64url');
+function safeEq(a, b) { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); }
+function makeToken(u) { const b = `${u.id}.${Date.now() + 180 * 864e5}.${u.sv || 0}`; return b + '.' + sign(b); }
+function parseCookies(req) {
+  const o = {};
+  (req.headers.cookie || '').split(';').forEach((p) => { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i).trim()] = p.slice(i + 1).trim(); });
+  return o;
+}
+function readUser(req) {
+  const c = parseCookies(req).sid; if (!c) return null;
+  const p = c.split('.'); if (p.length !== 4) return null;
+  const [id, exp, sv, sig] = p;
+  if (!safeEq(sig, sign(`${id}.${exp}.${sv}`)) || +exp < Date.now()) return null;
+  const u = users.find((x) => x.id === id);
+  return u && (u.sv || 0) === +sv ? u : null;
+}
+function setCookie(req, res, u) {
+  res.setHeader('Set-Cookie', `sid=${makeToken(u)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=15552000${req.secure ? '; Secure' : ''}`);
+}
+const pubUser = (u) => ({ id: u.id, name: u.name, username: u.username, role: u.role, kidId: u.kidId || null });
+
+const fails = new Map();
+function tooMany(ip) { const f = fails.get(ip); return f && f.n >= 10 && Date.now() - f.t < 15 * 60e3; }
+function noteFail(ip) { const f = fails.get(ip); if (!f || Date.now() - f.t > 15 * 60e3) fails.set(ip, { n: 1, t: Date.now() }); else { f.n++; f.t = Date.now(); } }
+
+/* ---------- 帖子存储（内存索引 + 每帖一个 json） ---------- */
+const posts = new Map();
+for (const id of fs.readdirSync(POSTS_DIR)) {
+  const p = readJSON(path.join(POSTS_DIR, id, 'post.json'), null);
+  if (p) posts.set(p.id, p);
+}
+const postDir = (id) => path.join(POSTS_DIR, id);
+const savePost = (p) => { fs.mkdirSync(postDir(p.id), { recursive: true }); writeJSON(path.join(postDir(p.id), 'post.json'), p); };
+const canView = (u, p) => p.type === 'record' || p.authorId === u.id || p.visibility === 'family';
+const canEdit = (u, p) => p.authorId === u.id || (u.role === 'admin' && p.type === 'record');
+const canDelete = (u, p) => canEdit(u, p) || (u.role === 'admin' && p.visibility === 'family');
+const userName = (id) => (users.find((x) => x.id === id) || {}).name || '已删除用户';
+
+function mediaOut(pid, m) {
+  const u = (f) => (f ? `/media/${pid}/${f}` : null);
+  return {
+    id: m.id, kind: m.kind, name: m.name, size: m.size, status: m.status || 'ready',
+    url: u(m.file), thumb: u(m.thumb), view: u(m.view), poster: u(m.poster), web: m.status === 'ready' ? u(m.web) : null,
+  };
+}
+function toClient(p, u) {
+  return {
+    id: p.id, type: p.type, kidIds: p.kidIds, authorId: p.authorId, authorName: userName(p.authorId),
+    date: p.date, title: p.title, body: p.body, visibility: p.visibility, createdAt: p.createdAt,
+    media: p.media.map((m) => mediaOut(p.id, m)),
+    comments: p.comments.map((c) => ({ ...c, name: userName(c.userId), mine: c.userId === u.id })),
+    likeCount: p.likes.length, liked: p.likes.includes(u.id),
+    canEdit: canEdit(u, p), canDelete: canDelete(u, p),
+  };
+}
+
+/* ---------- ffmpeg ---------- */
+function ff(args, timeout = 120e3) {
+  return new Promise((resolve) => {
+    execFile('ffmpeg', ['-y', '-v', 'error', '-nostdin', ...args], { timeout }, (err) => resolve(!err));
+  });
+}
+const exists = (f) => fs.existsSync(f) && fs.statSync(f).size > 0;
+async function makeImageVariants(dir, file, base) {
+  const src = path.join(dir, file), out = {};
+  const t = `t_${base}.jpg`, v = `v_${base}.jpg`;
+  if (await ff(['-i', src, '-vf', "scale='min(600,iw)':-2", '-frames:v', '1', '-q:v', '5', path.join(dir, t)]) && exists(path.join(dir, t))) out.thumb = t;
+  if (await ff(['-i', src, '-vf', "scale='min(1800,iw)':-2", '-frames:v', '1', '-q:v', '3', path.join(dir, v)]) && exists(path.join(dir, v))) out.view = v;
+  return out;
+}
+async function makePoster(dir, file, base) {
+  const src = path.join(dir, file), p = `p_${base}.jpg`, dst = path.join(dir, p);
+  const vf = ['-vf', "scale='min(600,iw)':-2", '-frames:v', '1', '-q:v', '5', dst];
+  if (await ff(['-ss', '0.5', '-i', src, ...vf]) && exists(dst)) return p;
+  if (await ff(['-i', src, ...vf]) && exists(dst)) return p;
+  return null;
+}
+const queue = []; let working = false;
+function enqueue(pid, mid) { queue.push({ pid, mid }); if (!working) work(); }
+async function work() {
+  working = true;
+  while (queue.length) {
+    const { pid, mid } = queue.shift();
+    const p = posts.get(pid); const m = p && p.media.find((x) => x.id === mid);
+    if (!m) continue;
+    const dir = path.join(postDir(pid), 'files'), base = path.basename(m.file, path.extname(m.file)), w = `w_${base}.mp4`;
+    const ok = await ff(['-i', path.join(dir, m.file), '-vf', "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'",
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', path.join(dir, w)], 3600e3);
+    if (posts.get(pid) && p.media.includes(m)) {
+      if (ok && exists(path.join(dir, w))) { m.web = w; m.status = 'ready'; } else { m.status = 'failed'; }
+      savePost(p);
+    } else { fsp.rm(path.join(dir, w), { force: true }).catch(() => {}); }
+  }
+  working = false;
+}
+for (const p of posts.values()) for (const m of p.media) if (m.kind === 'video' && m.status === 'processing') enqueue(p.id, m.id);
+
+// multer 把非 ASCII 文件名按 latin1 解出来，这里还原成 UTF-8（已经是正确 UTF-8 的则保持不变）
+function fixName(n) {
+  if (![...n].every((c) => c.charCodeAt(0) < 256)) return n;
+  const s = Buffer.from(n, 'latin1').toString('utf8');
+  return s.includes('�') ? n : s;
+}
+async function processUpload(post, f) {
+  const dir = path.dirname(f.path), ext = path.extname(f.filename).toLowerCase(), base = path.basename(f.filename, ext);
+  const m = { id: rand(4), file: f.filename, name: fixName(f.originalname).slice(0, 200), kind: VID_EXT.has(ext) ? 'video' : 'image', size: f.size };
+  if (m.kind === 'image') Object.assign(m, await makeImageVariants(dir, f.filename, base));
+  else { m.poster = await makePoster(dir, f.filename, base) || undefined; m.status = 'processing'; }
+  return m;
+}
+
+/* ---------- 上传 ---------- */
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => { const d = path.join(postDir(req.pid), 'files'); fs.mkdirSync(d, { recursive: true }); cb(null, d); },
+    filename: (req, file, cb) => cb(null, rand(6) + path.extname(file.originalname).toLowerCase()),
+  }),
+  limits: { fileSize: MAX_UPLOAD, files: 40 },
+  fileFilter: (req, file, cb) => {
+    const e = path.extname(file.originalname).toLowerCase();
+    cb(null, IMG_EXT.has(e) || VID_EXT.has(e));
+  },
+});
+const wrapUpload = (isNew) => (req, res, next) => upload.array('files', 40)(req, res, (err) => {
+  if (!err) return next();
+  if (isNew) fsp.rm(postDir(req.pid), { recursive: true, force: true }).catch(() => {});
+  else (req.files || []).forEach((f) => fsp.rm(f.path, { force: true }).catch(() => {}));
+  res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? '文件太大了' : '上传失败：' + err.message });
+});
+
+/* ---------- 应用 ---------- */
+const app = express();
+app.set('trust proxy', true);
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  next();
+});
+app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /\n'));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.static(path.join(__dirname, 'public'), { etag: true, maxAge: 0 }));
+
+const needLogin = (req, res, next) => { const u = readUser(req); if (!u) return res.status(401).json({ error: '请先登录' }); req.user = u; next(); };
+const needAdmin = [needLogin, (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: '需要管理员权限' }))];
+const needWrite = [needLogin, (req, res, next) => (req.user.role !== 'viewer' ? next() : res.status(403).json({ error: '当前账号是只读的' }))];
+const str = (v, n) => String(v ?? '').trim().slice(0, n);
+
+app.get('/api/init', (req, res) => {
+  const me = readUser(req);
+  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids : [], settings: { title: settings.title } });
+});
+app.post('/api/setup', (req, res) => {
+  if (users.length) return res.status(403).json({ error: '已经初始化过了' });
+  const { name, username, password } = req.body || {};
+  if (!str(name, 30) || !str(username, 30) || String(password || '').length < 6) return res.status(400).json({ error: '请填写名字、用户名，密码至少 6 位' });
+  const u = { id: 'u_' + rand(4), name: str(name, 30), username: str(username, 30).toLowerCase(), pw: hashPw(password), role: 'admin', sv: 0 };
+  users.push(u); saveUsers(); setCookie(req, res, u); res.json({ ok: true });
+});
+app.post('/api/login', (req, res) => {
+  const ip = req.ip;
+  if (tooMany(ip)) return res.status(429).json({ error: '尝试次数太多，请 15 分钟后再试' });
+  const { username, password } = req.body || {};
+  const u = users.find((x) => x.username === str(username, 30).toLowerCase());
+  if (!u || !checkPw(String(password || ''), u.pw)) { noteFail(ip); return res.status(401).json({ error: '用户名或密码不对' }); }
+  fails.delete(ip); setCookie(req, res, u); res.json({ ok: true });
+});
+app.post('/api/logout', (req, res) => { res.setHeader('Set-Cookie', 'sid=; Path=/; Max-Age=0'); res.json({ ok: true }); });
+
+/* 自己的账号 */
+app.put('/api/me', needLogin, (req, res) => {
+  const n = str(req.body.name, 30); if (!n) return res.status(400).json({ error: '名字不能为空' });
+  req.user.name = n; saveUsers(); res.json(pubUser(req.user));
+});
+app.post('/api/me/password', needLogin, (req, res) => {
+  const { old, pw } = req.body || {};
+  if (!checkPw(String(old || ''), req.user.pw)) return res.status(400).json({ error: '旧密码不对' });
+  if (String(pw || '').length < 6) return res.status(400).json({ error: '新密码至少 6 位' });
+  req.user.pw = hashPw(pw); req.user.sv = (req.user.sv || 0) + 1; saveUsers(); setCookie(req, res, req.user); res.json({ ok: true });
+});
+
+/* 孩子 / 站点 / 账号管理（管理员） */
+app.put('/api/settings', needAdmin, (req, res) => {
+  settings.title = str(req.body.title, 20) || '成长册'; saveSettings(); res.json({ title: settings.title });
+});
+function kidFields(b) { return { name: str(b.name, 20), birthday: /^\d{4}-\d{2}-\d{2}$/.test(b.birthday || '') ? b.birthday : '', emoji: str(b.emoji, 4) || '🌸' }; }
+app.post('/api/kids', needAdmin, (req, res) => {
+  const f = kidFields(req.body); if (!f.name) return res.status(400).json({ error: '请填写名字' });
+  const k = { id: 'k_' + rand(3), ...f, color: KID_COLORS[kids.length % KID_COLORS.length] };
+  kids.push(k); saveKids(); res.json(k);
+});
+app.put('/api/kids/:id', needAdmin, (req, res) => {
+  const k = kids.find((x) => x.id === req.params.id); if (!k) return res.status(404).json({ error: '没有这个孩子' });
+  const f = kidFields(req.body); if (!f.name) return res.status(400).json({ error: '请填写名字' });
+  Object.assign(k, f); saveKids(); res.json(k);
+});
+app.delete('/api/kids/:id', needAdmin, (req, res) => {
+  kids = kids.filter((x) => x.id !== req.params.id); saveKids();
+  users.forEach((u) => { if (u.kidId === req.params.id) u.kidId = null; }); saveUsers();
+  for (const p of posts.values()) if (p.kidIds.includes(req.params.id)) { p.kidIds = p.kidIds.filter((k) => k !== req.params.id); savePost(p); }
+  res.json({ ok: true });
+});
+app.get('/api/users', needAdmin, (req, res) => res.json(users.map(pubUser)));
+function userFields(b) {
+  return { name: str(b.name, 30), role: ROLES.includes(b.role) ? b.role : 'member', kidId: kids.some((k) => k.id === b.kidId) ? b.kidId : null };
+}
+app.post('/api/users', needAdmin, (req, res) => {
+  const f = userFields(req.body), un = str(req.body.username, 30).toLowerCase();
+  if (!f.name || !un || String(req.body.password || '').length < 6) return res.status(400).json({ error: '请填写名字、用户名，密码至少 6 位' });
+  if (users.some((x) => x.username === un)) return res.status(400).json({ error: '用户名已被占用' });
+  const u = { id: 'u_' + rand(4), username: un, pw: hashPw(req.body.password), sv: 0, ...f };
+  users.push(u); saveUsers(); res.json(pubUser(u));
+});
+app.put('/api/users/:id', needAdmin, (req, res) => {
+  const u = users.find((x) => x.id === req.params.id); if (!u) return res.status(404).json({ error: '没有这个账号' });
+  const f = userFields(req.body); if (!f.name) return res.status(400).json({ error: '名字不能为空' });
+  if (u.role === 'admin' && f.role !== 'admin' && users.filter((x) => x.role === 'admin').length < 2) return res.status(400).json({ error: '至少要保留一个管理员' });
+  Object.assign(u, f);
+  if (req.body.password) {
+    if (String(req.body.password).length < 6) return res.status(400).json({ error: '密码至少 6 位' });
+    u.pw = hashPw(req.body.password); u.sv = (u.sv || 0) + 1;
+  }
+  saveUsers(); res.json(pubUser(u));
+});
+app.delete('/api/users/:id', needAdmin, (req, res) => {
+  const u = users.find((x) => x.id === req.params.id); if (!u) return res.status(404).json({ error: '没有这个账号' });
+  if (u.id === req.user.id) return res.status(400).json({ error: '不能删除自己' });
+  users = users.filter((x) => x !== u); saveUsers(); res.json({ ok: true });
+});
+
+/* 帖子 */
+function postFields(b, u, old) {
+  const type = old ? old.type : (b.type === 'diary' ? 'diary' : 'record');
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : (old ? old.date : new Date().toISOString().slice(0, 10));
+  const has = (k) => b[k] !== undefined; // 修改时没传的字段保持原样，避免误清空
+  const ids = Array.isArray(b.kidIds) ? b.kidIds : String(b.kidIds || '').split(',');
+  const kidIds = has('kidIds') ? ids.filter((id) => kids.some((k) => k.id === id)) : (old ? old.kidIds : []);
+  const visibility = type === 'record' ? 'family' : has('visibility') ? (b.visibility === 'family' ? 'family' : 'private') : (old ? old.visibility : 'private');
+  return {
+    type, date, kidIds, visibility,
+    title: has('title') ? str(b.title, 100) : (old ? old.title : ''),
+    body: has('body') ? String(b.body || '').trim().slice(0, 50000) : (old ? old.body : ''),
+  };
+}
+app.get('/api/posts', needLogin, (req, res) => {
+  const { kid, type, q } = req.query;
+  const offset = Math.max(0, +req.query.offset || 0), limit = Math.min(50, +req.query.limit || 20);
+  let list = [...posts.values()].filter((p) => canView(req.user, p));
+  if (type) list = list.filter((p) => p.type === type);
+  if (kid) list = list.filter((p) => p.kidIds.includes(kid));
+  if (q) { const s = String(q).toLowerCase(); list = list.filter((p) => (p.title + ' ' + p.body).toLowerCase().includes(s)); }
+  list.sort((a, b) => (a.date === b.date ? (a.createdAt < b.createdAt ? 1 : -1) : a.date < b.date ? 1 : -1));
+  res.json({ total: list.length, items: list.slice(offset, offset + limit).map((p) => toClient(p, req.user)) });
+});
+const getPost = (req, res) => {
+  const p = posts.get(req.params.id);
+  if (!p || !canView(req.user, p)) { res.status(404).json({ error: '找不到这条记录' }); return null; }
+  return p;
+};
+app.get('/api/posts/:id', needLogin, (req, res) => { const p = getPost(req, res); if (p) res.json(toClient(p, req.user)); });
+
+app.post('/api/posts', needWrite, (req, res, next) => { req.pid = Date.now().toString(36) + rand(3); next(); }, wrapUpload(true), async (req, res) => {
+  const cleanup = () => fsp.rm(postDir(req.pid), { recursive: true, force: true }).catch(() => {});
+  try {
+    const f = postFields(req.body, req.user);
+    if (!f.title && !f.body && !(req.files || []).length) { await cleanup(); return res.status(400).json({ error: '写点文字或选张照片吧' }); }
+    const now = new Date().toISOString();
+    const post = { id: req.pid, ...f, authorId: req.user.id, media: [], comments: [], likes: [], createdAt: now, updatedAt: now };
+    for (const file of req.files || []) post.media.push(await processUpload(post, file));
+    posts.set(post.id, post); savePost(post);
+    post.media.filter((m) => m.kind === 'video').forEach((m) => enqueue(post.id, m.id));
+    res.json(toClient(post, req.user));
+  } catch (e) { console.error(e); await cleanup(); res.status(500).json({ error: '保存失败：' + e.message }); }
+});
+app.put('/api/posts/:id', needLogin, async (req, res) => {
+  const p = getPost(req, res); if (!p) return;
+  if (!canEdit(req.user, p)) return res.status(403).json({ error: '没有权限修改' });
+  const f = postFields(req.body, req.user, p);
+  const rm = new Set(Array.isArray(req.body.removeMedia) ? req.body.removeMedia : []);
+  const gone = p.media.filter((m) => rm.has(m.id));
+  p.media = p.media.filter((m) => !rm.has(m.id));
+  if (!f.title && !f.body && !p.media.length) return res.status(400).json({ error: '内容不能全空' });
+  Object.assign(p, f, { updatedAt: new Date().toISOString() }); savePost(p);
+  for (const m of gone) for (const k of ['file', 'thumb', 'view', 'poster', 'web']) if (m[k]) fsp.rm(path.join(postDir(p.id), 'files', m[k]), { force: true }).catch(() => {});
+  res.json(toClient(p, req.user));
+});
+app.post('/api/posts/:id/media', needLogin, (req, res, next) => {
+  const p = getPost(req, res); if (!p) return;
+  if (!canEdit(req.user, p)) return res.status(403).json({ error: '没有权限修改' });
+  req.pid = p.id; req.post = p; next();
+}, wrapUpload(false), async (req, res) => {
+  try {
+    for (const file of req.files || []) {
+      const m = await processUpload(req.post, file); req.post.media.push(m);
+      if (m.kind === 'video') enqueue(req.post.id, m.id);
+    }
+    req.post.updatedAt = new Date().toISOString(); savePost(req.post); res.json(toClient(req.post, req.user));
+  } catch (e) { console.error(e); res.status(500).json({ error: '保存失败：' + e.message }); }
+});
+app.delete('/api/posts/:id', needLogin, (req, res) => {
+  const p = getPost(req, res); if (!p) return;
+  if (!canDelete(req.user, p)) return res.status(403).json({ error: '没有权限删除' });
+  posts.delete(p.id); fsp.rm(postDir(p.id), { recursive: true, force: true }).catch(() => {}); res.json({ ok: true });
+});
+app.post('/api/posts/:id/like', needLogin, (req, res) => {
+  const p = getPost(req, res); if (!p) return;
+  const i = p.likes.indexOf(req.user.id); if (i >= 0) p.likes.splice(i, 1); else p.likes.push(req.user.id);
+  savePost(p); res.json({ liked: i < 0, likeCount: p.likes.length });
+});
+app.post('/api/posts/:id/comments', needLogin, (req, res) => {
+  const p = getPost(req, res); if (!p) return;
+  const text = str(req.body.text, 1000); if (!text) return res.status(400).json({ error: '评论不能为空' });
+  p.comments.push({ id: rand(4), userId: req.user.id, text, at: new Date().toISOString() });
+  savePost(p); res.json(toClient(p, req.user));
+});
+app.delete('/api/posts/:id/comments/:cid', needLogin, (req, res) => {
+  const p = getPost(req, res); if (!p) return;
+  const c = p.comments.find((x) => x.id === req.params.cid); if (!c) return res.status(404).json({ error: '没有这条评论' });
+  if (c.userId !== req.user.id && p.authorId !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: '没有权限' });
+  p.comments = p.comments.filter((x) => x !== c); savePost(p); res.json(toClient(p, req.user));
+});
+
+/* 媒体文件（需要登录，支持 Range 以便视频拖动） */
+app.get('/media/:id/:file', needLogin, (req, res) => {
+  const p = posts.get(req.params.id);
+  if (!p || !canView(req.user, p) || !/^[\w.-]+$/.test(req.params.file)) return res.status(404).end();
+  res.setHeader('Cache-Control', 'private, max-age=2592000');
+  res.sendFile(path.join(postDir(p.id), 'files', req.params.file), (err) => { if (err && !res.headersSent) res.status(404).end(); });
+});
+
+/* 导出：一个可离线翻看的压缩包 */
+const slug = (s) => String(s || '').replace(/[\\/:*?"<>|\r\n]/g, ' ').trim().slice(0, 30);
+app.get('/api/export', needLogin, async (req, res) => {
+  const kid = kids.find((k) => k.id === req.query.kid);
+  let list = [...posts.values()].filter((p) => canView(req.user, p));
+  if (kid) list = list.filter((p) => (p.type === 'record' ? (p.kidIds.includes(kid.id) || !p.kidIds.length) : p.authorId === req.user.id));
+  list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt < b.createdAt ? -1 : 1));
+  const today = new Date().toISOString().slice(0, 10);
+  const archive = {
+    title: settings.title, exportedAt: today, forKid: kid ? kid.id : null, kids,
+    posts: list.map((p) => ({
+      id: p.id, type: p.type, date: p.date, title: p.title, body: p.body, kidIds: p.kidIds, author: userName(p.authorId),
+      comments: p.comments.map((c) => ({ name: userName(c.userId), text: c.text, at: c.at })),
+      media: p.media.map((m) => ({ kind: m.kind, name: m.name, file: `media/${p.id}/${m.file}`, poster: m.poster ? `media/${p.id}/${m.poster}` : null, web: m.web && m.status === 'ready' ? `media/${p.id}/${m.web}` : null })),
+    })),
+  };
+  const zip = new ZipArchive({ zlib: { level: 1 } });
+  zip.on('error', (e) => { console.error(e); res.destroy(); });
+  res.attachment(`${slug(settings.title) || '成长册'}${kid ? '-' + slug(kid.name) : ''}-${today}.zip`);
+  zip.pipe(res);
+  zip.append('window.ARCHIVE = ' + JSON.stringify(archive) + ';', { name: 'data.js' });
+  zip.append('用浏览器打开 index.html 就能离线翻看。\nmedia 文件夹里是原始照片和视频，posts 文件夹里是每一条记录的文字（Markdown）。\n', { name: '说明.txt' });
+  zip.file(path.join(__dirname, 'export-viewer.html'), { name: 'index.html' });
+  for (const p of list) {
+    const md = `# ${p.title || '(无标题)'}\n\n- 日期：${p.date}\n- 作者：${userName(p.authorId)}\n- 关于：${p.kidIds.map((id) => (kids.find((k) => k.id === id) || {}).name).filter(Boolean).join('、') || '全家'}\n\n${p.body}\n\n` +
+      p.media.map((m) => `![${m.name}](../media/${p.id}/${m.file})`).join('\n') + '\n' +
+      (p.comments.length ? '\n## 评论\n' + p.comments.map((c) => `- ${userName(c.userId)}：${c.text}`).join('\n') + '\n' : '');
+    zip.append(md, { name: `posts/${p.date}_${slug(p.title) || p.id}_${p.id.slice(-4)}.md` });
+    for (const m of p.media) for (const k of ['file', 'poster', 'web']) {
+      const f = path.join(postDir(p.id), 'files', m[k] || '');
+      if (m[k] && fs.existsSync(f)) zip.file(f, { name: `media/${p.id}/${m[k]}`, store: true });
+    }
+  }
+  zip.finalize();
+});
+
+/* 存储用量 */
+function dirSize(d) {
+  let n = 0;
+  for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+    const f = path.join(d, e.name);
+    n += e.isDirectory() ? dirSize(f) : fs.statSync(f).size;
+  }
+  return n;
+}
+app.get('/api/stats', needAdmin, (req, res) => {
+  let videos = 0, images = 0;
+  for (const p of posts.values()) for (const m of p.media) m.kind === 'video' ? videos++ : images++;
+  res.json({ posts: posts.size, images, videos, bytes: dirSize(DATA), pending: queue.length + (working ? 1 : 0) });
+});
+
+app.use((req, res) => res.status(404).json({ error: '没有这个页面' }));
+app.listen(PORT, () => console.log(`成长册已启动：http://localhost:${PORT}  数据目录：${DATA}`));

@@ -1,0 +1,13 @@
+services:
+  growth-album:
+    build: .
+    container_name: growth-album
+    restart: unless-stopped
+    ports:
+      - "8090:3000"
+    environment:
+      - MAX_UPLOAD_MB=2048
+      - TZ=Asia/Shanghai
+    volumes:
+      # 所有照片、视频、文字都在这个文件夹，备份它就等于备份全部
+      - ./data:/app/data

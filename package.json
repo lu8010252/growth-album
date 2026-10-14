@@ -1,0 +1,20 @@
+{
+  "name": "growth-album",
+  "version": "1.0.0",
+  "description": "成长册：家庭成长记录站（文字/照片/视频）",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "express": "^4.22.3",
+    "multer": "^2.4.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  }
+}
