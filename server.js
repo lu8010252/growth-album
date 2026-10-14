@@ -28,6 +28,8 @@ const F_KIDS = path.join(DATA, 'kids.json');
 const F_SET = path.join(DATA, 'settings.json');
 const F_SECRET = path.join(DATA, 'secret.key');
 const F_AI = path.join(DATA, 'ai.json');
+const F_GROWTH = path.join(DATA, 'growth.json');
+const F_QA = path.join(DATA, 'qa.json');
 let aiCfg = readJSON(F_AI, { baseUrl: '', apiKey: '', model: '' });
 const saveAi = () => fs.writeFileSync(F_AI, JSON.stringify(aiCfg, null, 2), { mode: 0o600 });
 const aiReady = () => !!(aiCfg.baseUrl && aiCfg.apiKey && aiCfg.model);
@@ -35,16 +37,25 @@ const aiReady = () => !!(aiCfg.baseUrl && aiCfg.apiKey && aiCfg.model);
 let users = readJSON(F_USERS, []);
 let kids = readJSON(F_KIDS, []);
 let settings = readJSON(F_SET, { title: '成长册' });
+let growth = readJSON(F_GROWTH, []); // 成长数据：{id,kidId,date,height,weight,shoe,note,by}
+let qaRecs = readJSON(F_QA, []);     // 生日问答：{id,kidId,age,date,answers:[{q,a}],by}
+const DEFAULT_QA = ['最喜欢的颜色？', '最喜欢吃的东西？', '最喜欢的动画片 / 书？', '最好的朋友是谁？', '长大了想做什么？', '最开心的事是什么？', '最害怕什么？', '想对爸爸妈妈说的一句话？'];
+const qaQuestions = () => (Array.isArray(settings.qaQuestions) && settings.qaQuestions.length ? settings.qaQuestions : DEFAULT_QA);
 let SECRET;
 try { SECRET = fs.readFileSync(F_SECRET, 'utf8').trim(); } catch { SECRET = rand(32); fs.writeFileSync(F_SECRET, SECRET, { mode: 0o600 }); }
 const saveUsers = () => writeJSON(F_USERS, users);
 const saveKids = () => writeJSON(F_KIDS, kids);
 const saveSettings = () => writeJSON(F_SET, settings);
+const saveGrowth = () => writeJSON(F_GROWTH, growth);
+const saveQa = () => writeJSON(F_QA, qaRecs);
 
 const KID_COLORS = ['#f2705f', '#4aa8a0', '#e5a23a', '#7c8cf0', '#c46fc0', '#6bb26b'];
 const ROLES = ['admin', 'member', 'viewer', 'child'];
 const IMG_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.avif', '.bmp']);
 const VID_EXT = new Set(['.mp4', '.mov', '.m4v', '.webm', '.3gp', '.mkv', '.avi']);
+const AUD_EXT = new Set(['.mp3', '.m4a', '.aac', '.wav', '.ogg', '.oga', '.opus', '.amr', '.flac', '.weba', '.wma']);
+const AUD_NATIVE = new Set(['.mp3', '.m4a', '.aac']); // 各浏览器都能直接播，不用转码
+const kindOf = (ext) => (VID_EXT.has(ext) ? 'video' : AUD_EXT.has(ext) ? 'audio' : 'image');
 
 /* ---------- 密码 / 会话 ---------- */
 function hashPw(pw) { const s = rand(8); return s + ':' + crypto.scryptSync(pw, s, 32).toString('hex'); }
@@ -86,9 +97,22 @@ for (const id of fs.readdirSync(POSTS_DIR)) {
 }
 const postDir = (id) => path.join(POSTS_DIR, id);
 const savePost = (p) => { fs.mkdirSync(postDir(p.id), { recursive: true }); writeJSON(path.join(postDir(p.id), 'post.json'), p); };
-const canView = (u, p) => p.type === 'record' || p.authorId === u.id || p.visibility === 'family';
-const canEdit = (u, p) => p.authorId === u.id || (u.role === 'admin' && p.type === 'record');
-const canDelete = (u, p) => canEdit(u, p) || (u.role === 'admin' && p.visibility === 'family');
+const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const isDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '') && !isNaN(new Date(v + 'T00:00:00'));
+// 生日 + N 岁（2 月 29 日出生的，非闰年算 2 月 28 日）
+function addYears(b, n) {
+  const [y, m, d] = b.split('-').map(Number), Y = y + n;
+  const last = new Date(Y, m, 0).getDate();
+  return `${Y}-${String(m).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`;
+}
+const isLocked = (p) => p.type === 'capsule' && p.unlockDate > localDay();   // 时间胶囊：没到日子谁也看不了
+const canView = (u, p) => {
+  if (p.type === 'record') return true;
+  if (p.authorId === u.id || p.visibility === 'family') return true;
+  return p.type === 'capsule' && !!u.kidId && p.kidIds.includes(u.kidId);      // 「只给她」：收信的孩子账号
+};
+const canEdit = (u, p) => (p.authorId === u.id && !isLocked(p)) || (u.role === 'admin' && p.type === 'record');
+const canDelete = (u, p) => p.authorId === u.id || canEdit(u, p) || (u.role === 'admin' && p.visibility === 'family');
 const userName = (id) => (users.find((x) => x.id === id) || {}).name || '已删除用户';
 
 function mediaOut(pid, m) {
@@ -98,14 +122,40 @@ function mediaOut(pid, m) {
     url: u(m.file), thumb: u(m.thumb), view: u(m.view), poster: u(m.poster), web: m.status === 'ready' ? u(m.web) : null,
   };
 }
+const kidById = (id) => kids.find((k) => k.id === id);
+/* 评论可见性：公开 / 悄悄话（仅管理员 · 指定的人 · 孩子满 18 岁后）。评论者本人永远看得到自己写的 */
+function canSeeComment(u, c) {
+  const w = c.whisper;
+  if (!w || c.userId === u.id) return true;
+  if (w.type === 'admin') return u.role === 'admin';
+  if (w.type === 'user') return u.id === w.to;
+  if (w.type === 'future') { const k = kidById(w.kidId); return !!k && !!k.birthday && u.kidId === k.id && addYears(k.birthday, 18) <= localDay(); }
+  return false;
+}
+function whisperLabel(w, mine) {
+  if (!w) return '';
+  if (w.type === 'admin') return '仅管理员可见';
+  if (w.type === 'user') return mine ? `只有${userName(w.to)}能看到` : '只有你能看到';
+  const k = kidById(w.kidId);
+  return mine ? `${k ? k.name : '孩子'}满 18 岁后才能看到` : '写给你的悄悄话';
+}
 function toClient(p, u) {
-  return {
+  const base = {
     id: p.id, type: p.type, kidIds: p.kidIds, authorId: p.authorId, authorName: userName(p.authorId),
-    date: p.date, title: p.title, body: p.body, visibility: p.visibility, createdAt: p.createdAt, ai: !!p.ai,
-    media: p.media.map((m) => mediaOut(p.id, m)),
-    comments: p.comments.map((c) => ({ ...c, name: userName(c.userId), mine: c.userId === u.id })),
-    likeCount: p.likes.length, liked: p.likes.includes(u.id),
+    date: p.date, visibility: p.visibility, createdAt: p.createdAt, ai: !!p.ai,
     canEdit: canEdit(u, p), canDelete: canDelete(u, p),
+  };
+  if (p.type === 'capsule') Object.assign(base, { unlockDate: p.unlockDate, unlockMode: p.unlockMode, unlockAge: p.unlockAge || null });
+  if (isLocked(p)) return { ...base, locked: true, title: '', body: '', media: [], comments: [], likeCount: 0, liked: false };
+  return {
+    ...base, title: p.title, body: p.body,
+    media: p.media.map((m) => mediaOut(p.id, m)),
+    comments: p.comments.filter((c) => canSeeComment(u, c)).map((c) => ({
+      id: c.id, text: c.text, at: c.at, parentId: c.parentId || null, replyToName: c.replyToName || '',
+      name: c.nick || userName(c.userId), account: userName(c.userId), mine: c.userId === u.id,
+      whisper: whisperLabel(c.whisper, c.userId === u.id),
+    })),
+    likeCount: p.likes.length, liked: p.likes.includes(u.id),
   };
 }
 
@@ -138,9 +188,11 @@ async function work() {
     const { pid, mid } = queue.shift();
     const p = posts.get(pid); const m = p && p.media.find((x) => x.id === mid);
     if (!m) continue;
-    const dir = path.join(postDir(pid), 'files'), base = path.basename(m.file, path.extname(m.file)), w = `w_${base}.mp4`;
-    const ok = await ff(['-i', path.join(dir, m.file), '-vf', "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'",
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', path.join(dir, w)], 3600e3);
+    const dir = path.join(postDir(pid), 'files'), base = path.basename(m.file, path.extname(m.file)), w = m.kind === 'audio' ? `w_${base}.m4a` : `w_${base}.mp4`;
+    const ok = m.kind === 'audio'
+      ? await ff(['-i', path.join(dir, m.file), '-vn', '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', path.join(dir, w)], 600e3)
+      : await ff(['-i', path.join(dir, m.file), '-vf', "scale='if(gt(iw,ih),-2,min(720,iw))':'if(gt(iw,ih),min(720,ih),-2)'",
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', path.join(dir, w)], 3600e3);
     if (posts.get(pid) && p.media.includes(m)) {
       if (ok && exists(path.join(dir, w))) { m.web = w; m.status = 'ready'; } else { m.status = 'failed'; }
       savePost(p);
@@ -148,7 +200,7 @@ async function work() {
   }
   working = false;
 }
-for (const p of posts.values()) for (const m of p.media) if (m.kind === 'video' && m.status === 'processing') enqueue(p.id, m.id);
+for (const p of posts.values()) for (const m of p.media) if (m.kind !== 'image' && m.status === 'processing') enqueue(p.id, m.id);
 
 // multer 把非 ASCII 文件名按 latin1 解出来，这里还原成 UTF-8（已经是正确 UTF-8 的则保持不变）
 function fixName(n) {
@@ -158,8 +210,9 @@ function fixName(n) {
 }
 async function processUpload(post, f) {
   const dir = path.dirname(f.path), ext = path.extname(f.filename).toLowerCase(), base = path.basename(f.filename, ext);
-  const m = { id: rand(4), file: f.filename, name: fixName(f.originalname).slice(0, 200), kind: VID_EXT.has(ext) ? 'video' : 'image', size: f.size };
+  const m = { id: rand(4), file: f.filename, name: fixName(f.originalname).slice(0, 200), kind: kindOf(ext), size: f.size };
   if (m.kind === 'image') Object.assign(m, await makeImageVariants(dir, f.filename, base));
+  else if (m.kind === 'audio') { if (!AUD_NATIVE.has(ext)) m.status = 'processing'; }
   else { m.poster = await makePoster(dir, f.filename, base) || undefined; m.status = 'processing'; }
   return m;
 }
@@ -173,7 +226,7 @@ const upload = multer({
   limits: { fileSize: MAX_UPLOAD, files: 40 },
   fileFilter: (req, file, cb) => {
     const e = path.extname(file.originalname).toLowerCase();
-    cb(null, IMG_EXT.has(e) || VID_EXT.has(e));
+    cb(null, IMG_EXT.has(e) || VID_EXT.has(e) || AUD_EXT.has(e));
   },
 });
 const wrapUpload = (isNew) => (req, res, next) => upload.array('files', 40)(req, res, (err) => {
@@ -204,7 +257,7 @@ const str = (v, n) => String(v ?? '').trim().slice(0, n);
 
 app.get('/api/init', (req, res) => {
   const me = readUser(req);
-  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids : [], settings: { title: settings.title }, ai: !!me && aiReady() });
+  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids : [], settings: { title: settings.title }, ai: !!me && aiReady(), qaQuestions: me ? qaQuestions() : [] });
 });
 app.post('/api/setup', (req, res) => {
   if (users.length) return res.status(403).json({ error: '已经初始化过了' });
@@ -286,8 +339,8 @@ app.delete('/api/users/:id', needAdmin, (req, res) => {
 
 /* 帖子 */
 function postFields(b, u, old) {
-  const type = old ? old.type : (b.type === 'diary' ? 'diary' : 'record');
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : (old ? old.date : new Date().toISOString().slice(0, 10));
+  const type = old ? old.type : (b.type === 'diary' || b.type === 'capsule' ? b.type : 'record');
+  const date = isDay(b.date) ? b.date : (old ? old.date : localDay());
   const has = (k) => b[k] !== undefined; // 修改时没传的字段保持原样，避免误清空
   const ids = Array.isArray(b.kidIds) ? b.kidIds : String(b.kidIds || '').split(',');
   const kidIds = has('kidIds') ? ids.filter((id) => kids.some((k) => k.id === id)) : (old ? old.kidIds : []);
@@ -298,12 +351,28 @@ function postFields(b, u, old) {
     body: has('body') ? String(b.body || '').trim().slice(0, 50000) : (old ? old.body : ''),
   };
 }
+/* 时间胶囊的解锁条件：指定日期，或某个孩子满 N 岁。封存后连写信的人也看不到，直到那天 */
+function capsuleFields(b, f) {
+  let r;
+  if (b.unlockMode === 'age') {
+    const k = kidById(f.kidIds[0]), age = Math.round(+b.unlockAge);
+    if (!k || !k.birthday) return { error: '请选一个填了生日的孩子作为收信人，才能按年龄解锁' };
+    if (!(age >= 1 && age <= 60)) return { error: '年龄请填 1~60' };
+    r = { unlockMode: 'age', unlockAge: age, unlockDate: addYears(k.birthday, age) };
+  } else {
+    if (!isDay(b.unlockDate)) return { error: '请选择解锁日期' };
+    r = { unlockMode: 'date', unlockDate: b.unlockDate };
+  }
+  if (r.unlockDate <= localDay()) return { error: '解锁日期要在今天之后' };
+  return r;
+}
 app.get('/api/posts', needLogin, (req, res) => {
   const { kid, type, q } = req.query;
   const offset = Math.max(0, +req.query.offset || 0), limit = Math.min(50, +req.query.limit || 20);
-  let list = [...posts.values()].filter((p) => canView(req.user, p));
+  let list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p));   // 胶囊有自己的页面
   if (type) list = list.filter((p) => p.type === type);
-  if (kid) list = list.filter((p) => p.kidIds.includes(kid));
+  if (kid === 'together') list = list.filter((p) => p.kidIds.length >= 2);   // 双宝日常：两个以上孩子同框
+  else if (kid) list = list.filter((p) => p.kidIds.includes(kid));
   if (q) { const s = String(q).toLowerCase(); list = list.filter((p) => (p.title + ' ' + p.body).toLowerCase().includes(s)); }
   list.sort((a, b) => (a.date === b.date ? (a.createdAt < b.createdAt ? 1 : -1) : a.date < b.date ? 1 : -1));
   res.json({ total: list.length, items: list.slice(offset, offset + limit).map((p) => toClient(p, req.user)) });
@@ -320,11 +389,17 @@ app.post('/api/posts', needWrite, (req, res, next) => { req.pid = Date.now().toS
   try {
     const f = postFields(req.body, req.user);
     if (!f.title && !f.body && !(req.files || []).length) { await cleanup(); return res.status(400).json({ error: '写点文字或选张照片吧' }); }
+    let cap = {};
+    if (f.type === 'capsule') {
+      cap = capsuleFields(req.body, f);
+      if (cap.error) { await cleanup(); return res.status(400).json({ error: cap.error }); }
+      f.date = localDay();
+    }
     const now = new Date().toISOString();
-    const post = { id: req.pid, ...f, ai: ['1', 'true', true, 1].includes(req.body.ai), authorId: req.user.id, media: [], comments: [], likes: [], createdAt: now, updatedAt: now };
+    const post = { id: req.pid, ...f, ...cap, ai: ['1', 'true', true, 1].includes(req.body.ai), authorId: req.user.id, media: [], comments: [], likes: [], createdAt: now, updatedAt: now };
     for (const file of req.files || []) post.media.push(await processUpload(post, file));
     posts.set(post.id, post); savePost(post);
-    post.media.filter((m) => m.kind === 'video').forEach((m) => enqueue(post.id, m.id));
+    post.media.filter((m) => m.status === 'processing').forEach((m) => enqueue(post.id, m.id));
     res.json(toClient(post, req.user));
   } catch (e) { console.error(e); await cleanup(); res.status(500).json({ error: '保存失败：' + e.message }); }
 });
@@ -348,7 +423,7 @@ app.post('/api/posts/:id/media', needLogin, (req, res, next) => {
   try {
     for (const file of req.files || []) {
       const m = await processUpload(req.post, file); req.post.media.push(m);
-      if (m.kind === 'video') enqueue(req.post.id, m.id);
+      if (m.status === 'processing') enqueue(req.post.id, m.id);
     }
     req.post.updatedAt = new Date().toISOString(); savePost(req.post); res.json(toClient(req.post, req.user));
   } catch (e) { console.error(e); res.status(500).json({ error: '保存失败：' + e.message }); }
@@ -365,21 +440,115 @@ app.post('/api/posts/:id/like', needLogin, (req, res) => {
 });
 app.post('/api/posts/:id/comments', needLogin, (req, res) => {
   const p = getPost(req, res); if (!p) return;
+  if (isLocked(p)) return res.status(403).json({ error: '这个胶囊还没到开启的日子' });
   const text = str(req.body.text, 1000); if (!text) return res.status(400).json({ error: '评论不能为空' });
-  p.comments.push({ id: rand(4), userId: req.user.id, text, at: new Date().toISOString() });
-  savePost(p); res.json(toClient(p, req.user));
+  const c = { id: rand(4), userId: req.user.id, text, at: new Date().toISOString() };
+  const nick = str(req.body.nick, 20); if (nick) c.nick = nick;       // 署名：比如共用账号的「外公」
+  const par = req.body.parentId ? p.comments.find((x) => x.id === req.body.parentId) : null;
+  if (req.body.parentId && (!par || !canSeeComment(req.user, par))) return res.status(404).json({ error: '要回复的评论不存在' });
+  if (par) { c.parentId = par.parentId || par.id; c.replyToName = par.nick || userName(par.userId); }
+  const w = req.body.whisper;
+  if (par && par.whisper) c.whisper = par.userId === req.user.id ? par.whisper : { type: 'user', to: par.userId };   // 回复悄悄话仍是悄悄话
+  else if (w && w.type) {
+    if (w.type === 'admin') c.whisper = { type: 'admin' };
+    else if (w.type === 'user') {
+      if (!users.some((x) => x.id === w.to) || w.to === req.user.id) return res.status(400).json({ error: '请选择悄悄话要给谁看' });
+      c.whisper = { type: 'user', to: w.to };
+    } else if (w.type === 'future') {
+      const k = kidById(w.kidId);
+      if (!k || !k.birthday) return res.status(400).json({ error: '这个孩子还没填生日，没法算 18 岁' });
+      c.whisper = { type: 'future', kidId: k.id };
+    } else return res.status(400).json({ error: '悄悄话类型不对' });
+  }
+  p.comments.push(c); savePost(p); res.json(toClient(p, req.user));
 });
 app.delete('/api/posts/:id/comments/:cid', needLogin, (req, res) => {
   const p = getPost(req, res); if (!p) return;
-  const c = p.comments.find((x) => x.id === req.params.cid); if (!c) return res.status(404).json({ error: '没有这条评论' });
+  const c = p.comments.find((x) => x.id === req.params.cid); if (!c || !canSeeComment(req.user, c)) return res.status(404).json({ error: '没有这条评论' });
   if (c.userId !== req.user.id && p.authorId !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: '没有权限' });
-  p.comments = p.comments.filter((x) => x !== c); savePost(p); res.json(toClient(p, req.user));
+  p.comments = p.comments.filter((x) => x !== c && x.parentId !== c.id); savePost(p); res.json(toClient(p, req.user));
+});
+app.get('/api/people', needLogin, (req, res) => res.json(users.map((u) => ({ id: u.id, name: u.name }))));
+
+/* 时间胶囊 */
+app.get('/api/capsules', needLogin, (req, res) => {
+  const list = [...posts.values()].filter((p) => p.type === 'capsule' && canView(req.user, p))
+    .sort((a, b) => (a.unlockDate < b.unlockDate ? -1 : a.unlockDate > b.unlockDate ? 1 : 0));
+  res.json(list.map((p) => toClient(p, req.user)));
+});
+
+/* 声音档案：所有记录里的语音，按日期倒序 */
+app.get('/api/voices', needLogin, (req, res) => {
+  const { kid } = req.query;
+  let list = [...posts.values()].filter((p) => canView(req.user, p) && !isLocked(p) && p.media.some((m) => m.kind === 'audio'));
+  if (kid === 'together') list = list.filter((p) => p.kidIds.length >= 2);
+  else if (kid) list = list.filter((p) => p.kidIds.includes(kid));
+  list.sort((a, b) => (a.date === b.date ? (a.createdAt < b.createdAt ? 1 : -1) : a.date < b.date ? 1 : -1));
+  res.json(list.map((p) => ({ postId: p.id, type: p.type, date: p.date, title: p.title, kidIds: p.kidIds, authorName: userName(p.authorId), media: p.media.filter((m) => m.kind === 'audio').map((m) => mediaOut(p.id, m)) })));
+});
+
+/* 成长数据：身高 / 体重 / 鞋码 */
+const numIn = (v, lo, hi) => { if (v === '' || v == null) return null; const n = +v; return isFinite(n) && n >= lo && n <= hi ? Math.round(n * 10) / 10 : NaN; };
+function growthFields(b) {
+  const kidId = kidById(b.kidId) ? b.kidId : '', date = isDay(b.date) ? b.date : '';
+  const height = numIn(b.height, 20, 250), weight = numIn(b.weight, 1, 200), shoe = numIn(b.shoe, 10, 50);
+  if (!kidId) return { error: '请选择孩子' };
+  if (!date) return { error: '请选择日期' };
+  if ([height, weight, shoe].some(Number.isNaN)) return { error: '数字不合理：身高 20~250 厘米，体重 1~200 公斤，鞋码 10~50' };
+  if (height == null && weight == null && shoe == null) return { error: '身高、体重、鞋码至少填一项' };
+  return { kidId, date, height, weight, shoe, note: str(b.note, 100) };
+}
+app.get('/api/growth', needLogin, (req, res) => {
+  res.json(growth.filter((g) => !req.query.kid || g.kidId === req.query.kid).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .map((g) => ({ ...g, byName: userName(g.by), canEdit: g.by === req.user.id || req.user.role === 'admin' })));
+});
+app.post('/api/growth', needWrite, (req, res) => {
+  const f = growthFields(req.body); if (f.error) return res.status(400).json({ error: f.error });
+  const g = { id: 'g_' + rand(4), ...f, by: req.user.id, at: new Date().toISOString() };
+  growth.push(g); saveGrowth(); res.json(g);
+});
+app.put('/api/growth/:id', needWrite, (req, res) => {
+  const g = growth.find((x) => x.id === req.params.id); if (!g) return res.status(404).json({ error: '没有这条数据' });
+  if (g.by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: '没有权限修改' });
+  const f = growthFields(req.body); if (f.error) return res.status(400).json({ error: f.error });
+  Object.assign(g, f); saveGrowth(); res.json(g);
+});
+app.delete('/api/growth/:id', needWrite, (req, res) => {
+  const g = growth.find((x) => x.id === req.params.id); if (!g) return res.status(404).json({ error: '没有这条数据' });
+  if (g.by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: '没有权限删除' });
+  growth = growth.filter((x) => x !== g); saveGrowth(); res.json({ ok: true });
+});
+
+/* 生日问答：每个孩子每个年龄一份，方便每年对比 */
+app.get('/api/qa', needLogin, (req, res) => res.json({ questions: qaQuestions(), records: qaRecs.map((r) => ({ ...r, byName: userName(r.by) })) }));
+app.put('/api/qa/questions', needAdmin, (req, res) => {
+  const qs = [...new Set((Array.isArray(req.body.questions) ? req.body.questions : []).map((x) => str(x, 60)).filter(Boolean))].slice(0, 30);
+  if (!qs.length) return res.status(400).json({ error: '至少要有一个问题' });
+  settings.qaQuestions = qs; saveSettings(); res.json({ questions: qs });
+});
+app.post('/api/qa', needWrite, (req, res) => {
+  const kid = kidById(req.body.kidId), age = Math.round(+req.body.age);
+  if (!kid) return res.status(400).json({ error: '请选择孩子' });
+  if (!(age >= 0 && age <= 40)) return res.status(400).json({ error: '年龄请填 0~40' });
+  const answers = (Array.isArray(req.body.answers) ? req.body.answers : []).map((x) => ({ q: str(x && x.q, 60), a: str(x && x.a, 1000) })).filter((x) => x.q && x.a);
+  if (!answers.length) return res.status(400).json({ error: '至少回答一个问题' });
+  let r = qaRecs.find((x) => x.kidId === kid.id && x.age === age);
+  if (r && r.by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: `${kid.name}${age}岁的问答是别人记的，只有 TA 本人或管理员能修改` });
+  const date = isDay(req.body.date) ? req.body.date : localDay();
+  if (r) Object.assign(r, { answers, date, updatedAt: new Date().toISOString() });
+  else { r = { id: 'q_' + rand(4), kidId: kid.id, age, date, answers, by: req.user.id, updatedAt: new Date().toISOString() }; qaRecs.push(r); }
+  saveQa(); res.json(r);
+});
+app.delete('/api/qa/:id', needWrite, (req, res) => {
+  const r = qaRecs.find((x) => x.id === req.params.id); if (!r) return res.status(404).json({ error: '没有这份问答' });
+  if (r.by !== req.user.id && req.user.role !== 'admin') return res.status(403).json({ error: '没有权限删除' });
+  qaRecs = qaRecs.filter((x) => x !== r); saveQa(); res.json({ ok: true });
 });
 
 /* 媒体文件（需要登录，支持 Range 以便视频拖动） */
 app.get('/media/:id/:file', needLogin, (req, res) => {
   const p = posts.get(req.params.id);
-  if (!p || !canView(req.user, p) || !/^[\w.-]+$/.test(req.params.file)) return res.status(404).end();
+  if (!p || !canView(req.user, p) || isLocked(p) || !/^[\w.-]+$/.test(req.params.file)) return res.status(404).end();
   res.setHeader('Cache-Control', 'private, max-age=2592000');
   res.sendFile(path.join(postDir(p.id), 'files', req.params.file), (err) => { if (err && !res.headersSent) res.status(404).end(); });
 });
@@ -388,15 +557,18 @@ app.get('/media/:id/:file', needLogin, (req, res) => {
 const slug = (s) => String(s || '').replace(/[\\/:*?"<>|\r\n]/g, ' ').trim().slice(0, 30);
 app.get('/api/export', needLogin, async (req, res) => {
   const kid = kids.find((k) => k.id === req.query.kid);
-  let list = [...posts.values()].filter((p) => canView(req.user, p));
-  if (kid) list = list.filter((p) => (p.type === 'record' ? (p.kidIds.includes(kid.id) || !p.kidIds.length) : p.authorId === req.user.id));
+  let list = [...posts.values()].filter((p) => canView(req.user, p) && !isLocked(p));
+  if (kid) list = list.filter((p) => (p.type === 'record' ? (p.kidIds.includes(kid.id) || !p.kidIds.length) : p.type === 'capsule' ? p.kidIds.includes(kid.id) : p.authorId === req.user.id));
   list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt < b.createdAt ? -1 : 1));
   const today = new Date().toISOString().slice(0, 10);
   const archive = {
-    title: settings.title, exportedAt: today, forKid: kid ? kid.id : null, kids,
+    title: settings.title, exportedAt: today, forKid: kid ? kid.id : null, kids, questions: qaQuestions(),
+    growth: growth.filter((g) => !kid || g.kidId === kid.id).sort((a, b) => (a.date < b.date ? -1 : 1)).map((g) => ({ kidId: g.kidId, date: g.date, height: g.height, weight: g.weight, shoe: g.shoe, note: g.note })),
+    qa: qaRecs.filter((r) => !kid || r.kidId === kid.id).sort((a, b) => a.age - b.age).map((r) => ({ kidId: r.kidId, age: r.age, date: r.date, answers: r.answers })),
     posts: list.map((p) => ({
       id: p.id, type: p.type, date: p.date, title: p.title, body: p.body, kidIds: p.kidIds, author: userName(p.authorId),
-      comments: p.comments.map((c) => ({ name: userName(c.userId), text: c.text, at: c.at })),
+      unlockDate: p.type === 'capsule' ? p.unlockDate : undefined,
+      comments: p.comments.filter((c) => canSeeComment(req.user, c)).map((c) => ({ name: c.nick || userName(c.userId), text: c.text, at: c.at, replyTo: c.replyToName || '', whisper: !!c.whisper })),
       media: p.media.map((m) => ({ kind: m.kind, name: m.name, file: `media/${p.id}/${m.file}`, poster: m.poster ? `media/${p.id}/${m.poster}` : null, web: m.web && m.status === 'ready' ? `media/${p.id}/${m.web}` : null })),
     })),
   };
@@ -408,9 +580,9 @@ app.get('/api/export', needLogin, async (req, res) => {
   zip.append('用浏览器打开 index.html 就能离线翻看。\nmedia 文件夹里是原始照片和视频，posts 文件夹里是每一条记录的文字（Markdown）。\n', { name: '说明.txt' });
   zip.file(path.join(__dirname, 'export-viewer.html'), { name: 'index.html' });
   for (const p of list) {
-    const md = `# ${p.title || '(无标题)'}\n\n- 日期：${p.date}\n- 作者：${userName(p.authorId)}\n- 关于：${p.kidIds.map((id) => (kids.find((k) => k.id === id) || {}).name).filter(Boolean).join('、') || '全家'}\n\n${p.body}\n\n` +
-      p.media.map((m) => `![${m.name}](../media/${p.id}/${m.file})`).join('\n') + '\n' +
-      (p.comments.length ? '\n## 评论\n' + p.comments.map((c) => `- ${userName(c.userId)}：${c.text}`).join('\n') + '\n' : '');
+    const md = `# ${p.title || '(无标题)'}\n\n- ${p.type === 'capsule' ? '封存于' : '日期'}：${p.date}${p.type === 'capsule' ? '，' + p.unlockDate + ' 开启' : ''}\n- 作者：${userName(p.authorId)}\n- 关于：${p.kidIds.map((id) => (kids.find((k) => k.id === id) || {}).name).filter(Boolean).join('、') || '全家'}\n\n${p.body}\n\n` +
+      p.media.map((m) => (m.kind === 'audio' ? `[🎙 ${m.name}](../media/${p.id}/${m.file})` : `![${m.name}](../media/${p.id}/${m.file})`)).join('\n') + '\n' +
+      (p.comments.length ? '\n## 评论\n' + p.comments.filter((c) => canSeeComment(req.user, c)).map((c) => `- ${c.whisper ? '🔒 ' : ''}${c.nick || userName(c.userId)}${c.replyToName ? ' 回复 ' + c.replyToName : ''}：${c.text}`).join('\n') + '\n' : '');
     zip.append(md, { name: `posts/${p.date}_${slug(p.title) || p.id}_${p.id.slice(-4)}.md` });
     for (const m of p.media) for (const k of ['file', 'poster', 'web']) {
       const f = path.join(postDir(p.id), 'files', m[k] || '');
@@ -459,7 +631,6 @@ function ageText(b, d) {
   if (Y <= 0 && M <= 0) { const n = Math.round((y - x) / 864e5); return n === 0 ? '出生当天' : `出生第${n}天`; }
   return Y > 0 ? (M > 0 ? `${Y}岁${M}个月` : `${Y}岁`) : `${M}个月`;
 }
-const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 app.get('/api/ai/config', needAdmin, (req, res) => res.json({ baseUrl: aiCfg.baseUrl, model: aiCfg.model, hasKey: !!aiCfg.apiKey }));
 app.put('/api/ai/config', needAdmin, (req, res) => {
@@ -527,7 +698,7 @@ app.post('/api/ai/review', needWrite, aiGuard, async (req, res) => {
     const names = kid ? '' : p.kidIds.map((id) => (kids.find((k) => k.id === id) || {}).name).filter(Boolean).join('、');
     const im = p.media.filter((m) => m.kind === 'image').length, vd = p.media.length - im;
     const extra = [im && im + '张照片', vd && vd + '个视频'].filter(Boolean).join('、');
-    const cm = p.comments.slice(0, 2).map((c) => `${userName(c.userId)}说：${c.text.slice(0, 40)}`).join('；');
+    const cm = p.comments.filter((c) => !c.whisper).slice(0, 2).map((c) => `${userName(c.userId)}说：${c.text.slice(0, 40)}`).join('；');
     return `【${p.date}${age ? '｜' + age : ''}${names ? '｜' + names : ''}】${p.title ? p.title + '。' : ''}${p.body.slice(0, cap)}${extra ? `（附${extra}）` : ''}${cm ? ` 家人评论：${cm}` : ''}`;
   });
   let text = lines.join('\n\n'); if (text.length > 60000) text = text.slice(0, 60000);

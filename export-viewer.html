@@ -35,18 +35,27 @@ h2{font-size:14px;color:var(--muted);margin:26px 4px 8px;font-weight:600}
 <script>
 const A=window.ARCHIVE,$=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function age(b,d){if(!b)return'';const x=new Date(b+'T00:00:00'),y=new Date(d+'T00:00:00');if(y<x)return'出生前';let Y=y.getFullYear()-x.getFullYear(),M=y.getMonth()-x.getMonth();if(y.getDate()<x.getDate())M--;if(M<0){Y--;M+=12}
-if(Y<=0&&M<=0){const n=Math.round((y-x)/864e5);return n===0?'出生当天':'出生第'+n+'天'}return Y>0?(M>0?Y+'岁'+M+'个月':Y+'岁'):M+'个月'}
+function age(b,d){if(!b)return'';const x=new Date(b+'T00:00:00'),y=new Date(d+'T00:00:00');if(y<x)return'出生前';let tm=(y.getFullYear()-x.getFullYear())*12+y.getMonth()-x.getMonth();if(y.getDate()<x.getDate())tm--;
+const an=new Date(x.getFullYear(),x.getMonth()+tm,Math.min(x.getDate(),new Date(x.getFullYear(),x.getMonth()+tm+1,0).getDate()));const D=Math.round((y-an)/864e5),Y=Math.floor(tm/12),M=tm%12;
+if(tm<=0)return D===0?'出生当天':'出生第'+D+'天';return(Y?Y+'岁':'')+(M||(Y&&D)?M+'个月':'')+(D?D+'天':'')}
 $('#t').textContent=A.title;$('#s').textContent='离线版 · 导出于 '+A.exportedAt+' · 共 '+A.posts.length+' 条';document.title=A.title+'（离线版）';
 let f='all';
-function chips(){const c=[['all','全部'],['diary','日记'],...A.kids.map(k=>[k.id,k.emoji+' '+k.name])];
+function chips(){const c=[['all','全部'],['diary','日记'],['capsule','✉️ 时间胶囊'],...A.kids.map(k=>[k.id,k.emoji+' '+k.name])];
+if(A.growth&&A.growth.length)c.push(['growth','📈 成长数据']);if(A.qa&&A.qa.length)c.push(['qa','🎂 生日问答']);
 $('#chips').innerHTML=c.map(([id,n])=>`<button class="${f===id?'on':''}" data-id="${id}">${esc(n)}</button>`).join('');
 document.querySelectorAll('#chips button').forEach(b=>b.onclick=()=>{f=b.dataset.id;chips();draw()})}
-function draw(){let l=A.posts.slice().reverse().filter(p=>f==='all'||(f==='diary'?p.type==='diary':p.kidIds.includes(f)));let h='',m='';
+function drawGrowth(){const kn=id=>(A.kids.find(k=>k.id===id)||{});const rows=A.growth.slice().reverse();
+$('#list').innerHTML='<div class="card" style="overflow-x:auto"><table style="border-collapse:collapse;font-size:14px;white-space:nowrap;width:100%"><tr style="color:var(--muted);text-align:left"><th>日期</th><th>谁</th><th>年龄</th><th>身高cm</th><th>体重kg</th><th>鞋码</th><th>备注</th></tr>'+rows.map(g=>{const k=kn(g.kidId);return `<tr><td>${g.date}</td><td>${esc((k.emoji||'')+' '+(k.name||''))}</td><td>${age(k.birthday,g.date)}</td><td>${g.height??''}</td><td>${g.weight??''}</td><td>${g.shoe??''}</td><td>${esc(g.note)}</td></tr>`}).join('')+'</table></div>'}
+function drawQa(){const qs=[...A.questions];A.qa.forEach(r=>r.answers.forEach(x=>{if(!qs.includes(x.q))qs.push(x.q)}));let h='';
+const groups=A.kids.filter(k=>A.qa.some(r=>r.kidId===k.id));
+for(const k of groups){h+=`<h2>${esc(k.emoji+' '+k.name)}</h2>`;for(const q of qs){const rs=A.qa.filter(r=>r.kidId===k.id).map(r=>[r.age,(r.answers.find(x=>x.q===q)||{}).a]).filter(x=>x[1]);if(rs.length)h+=`<div class="card"><b>${esc(q)}</b>${rs.map(([a,t])=>`<div class="cm" style="color:var(--ink)"><b>${a}岁</b>　${esc(t)}</div>`).join('')}</div>`}}
+$('#list').innerHTML=h}
+function draw(){if(f==='growth')return drawGrowth();if(f==='qa')return drawQa();
+let l=A.posts.slice().reverse().filter(p=>f==='all'||(f==='diary'?p.type==='diary':f==='capsule'?p.type==='capsule':p.kidIds.includes(f)));let h='',m='';
 for(const p of l){const mm=p.date.slice(0,4)+'年'+(+p.date.slice(5,7))+'月';if(mm!==m){m=mm;h+=`<h2>${mm}</h2>`}
 const tags=p.kidIds.map(id=>A.kids.find(k=>k.id===id)).filter(Boolean).map(k=>`<span class="tag" style="background:${k.color}">${esc(k.emoji+' '+k.name)} ${age(k.birthday,p.date)}</span>`).join('');
-const med=p.media.map(x=>x.kind==='video'?`<video controls playsinline preload="metadata" ${x.poster?`poster="${x.poster}"`:''} src="${x.web||x.file}"></video>`:`<img loading="lazy" src="${x.file}" data-full="${x.file}">`).join('');
-h+=`<article class="card"><div class="meta"><span>${p.date}</span>${tags}<span>${p.type==='diary'?'📖 日记':''} ${esc(p.author)}</span></div>${p.title?`<h3>${esc(p.title)}</h3>`:''}<div class="body">${esc(p.body)}</div>${med?`<div class="media">${med}</div>`:''}${p.comments.length?`<div class="cm">${p.comments.map(c=>esc(c.name)+'：'+esc(c.text)).join('<br>')}</div>`:''}</article>`}
+const med=p.media.map(x=>x.kind==='audio'?`<audio controls preload="none" src="${x.web||x.file}" style="grid-column:1/-1;width:100%"></audio>`:x.kind==='video'?`<video controls playsinline preload="metadata" ${x.poster?`poster="${x.poster}"`:''} src="${x.web||x.file}"></video>`:`<img loading="lazy" src="${x.file}" data-full="${x.file}">`).join('');
+h+=`<article class="card"><div class="meta"><span>${p.date}</span>${tags}<span>${p.type==='diary'?'📖 日记':p.type==='capsule'?'✉️ 时间胶囊（'+p.unlockDate+' 开启）':''} ${esc(p.author)}</span></div>${p.title?`<h3>${esc(p.title)}</h3>`:''}<div class="body">${esc(p.body)}</div>${med?`<div class="media">${med}</div>`:''}${p.comments.length?`<div class="cm">${p.comments.map(c=>(c.whisper?'🔒 ':'')+esc(c.name)+(c.replyTo?' 回复 '+esc(c.replyTo):'')+'：'+esc(c.text)).join('<br>')}</div>`:''}</article>`}
 $('#list').innerHTML=h||'<p style="text-align:center;color:var(--muted)">这里还没有内容</p>';
 document.querySelectorAll('.media img').forEach(i=>i.onclick=()=>{$('#lb img').src=i.dataset.full;$('#lb').style.display='flex'})}
 chips();draw();

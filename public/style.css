@@ -89,3 +89,42 @@ dialog::backdrop{background:#0006}
 .note{font-size:13px;color:var(--muted)}
 [hidden]{display:none!important}
 .chip.ai{border-style:dashed;color:var(--accent);cursor:pointer}
+/* 评论：回复、悄悄话 */
+.cmt .acts{float:right}
+.cmt .acts a{margin-left:12px;font-size:13px}
+.cmt.re{margin-left:18px;padding-left:12px;border-left:3px solid var(--line);border-top:0;padding-top:4px}
+.cmt.wh{background:var(--soft);border-radius:12px;padding:8px 10px;margin-top:6px;border-top:0}
+.cmt .lk{font-size:12px;color:var(--accent);margin-left:8px}
+.cmt .to{color:var(--muted)}
+details.more{margin-top:8px}
+details.more summary{cursor:pointer;font-size:13px;color:var(--muted)}
+.post .media figure.aud audio{width:100%;display:block}
+/* 珍藏 */
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tile{display:flex;flex-direction:column;gap:2px;background:var(--card);border-radius:20px;padding:18px 14px;box-shadow:0 2px 12px rgba(80,40,20,.06)}
+.tile b{font-size:30px;font-weight:400}
+.tile span{font-weight:600}
+.tile small{color:var(--muted);line-height:1.4}
+.lockbox{text-align:center;padding:28px 10px}
+.lockbox .big{font-size:56px}
+.lockbox .when{font-size:18px;font-weight:600;margin:4px 0}
+.card.lockcard{display:flex;gap:14px;align-items:center}
+.lockcard b{font-size:30px;font-weight:400}
+.lockcard small{color:var(--muted)}
+/* 成长数据 */
+.chart{width:100%;height:auto;display:block}
+.chart .gl{stroke:var(--line);stroke-width:1}
+.chart .ax{fill:var(--muted);font-size:15px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:6px;font-size:13px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.tw{overflow-x:auto}
+.gt{width:100%;border-collapse:collapse;font-size:14px;white-space:nowrap}
+.gt th{color:var(--muted);font-weight:500;text-align:left;padding:4px 8px 6px 0;font-size:12px}
+.gt td{padding:6px 8px 6px 0;border-top:1px solid var(--line)}
+.lnk{color:var(--accent);cursor:pointer;font-size:13px;margin-right:8px}
+/* 生日问答 */
+.qa{display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)}
+.qa:first-of-type{border-top:0}
+.qa .age{flex:none;color:#fff;border-radius:999px;padding:0 10px;font-size:12px;line-height:24px;margin-top:2px}
+.qa span:last-child{white-space:pre-wrap;word-break:break-word}
+dialog{max-height:90vh;overflow:auto}
