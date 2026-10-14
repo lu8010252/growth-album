@@ -9,7 +9,7 @@ git clone <本仓库> growth-album && cd growth-album
 docker compose up -d --build
 ```
 
-访问 `http://服务器IP:8090`，第一次打开会让你创建管理员账号。
+访问 `http://服务器IP:8010`，第一次打开会让你创建管理员账号。
 
 - 所有数据都在 `./data`（`posts/<id>/post.json` + `files/` 里的原图原视频，另有 `users.json`、`kids.json`）。**备份这个文件夹就是备份全部**，也可以直接交给孩子。
 - 反代（1Panel/OpenResty/Nginx）请把请求体上限调大并开启 HTTPS，例如 `client_max_body_size 2048m;`，并把 `proxy_request_buffering off;` 打开，大视频上传更稳。
