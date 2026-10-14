@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
-ENV NODE_ENV=production DATA_DIR=/app/data PORT=3000
+ENV NODE_ENV=production DATA_DIR=/app/data PORT=8010
 VOLUME /app/data
-EXPOSE 3000
+EXPOSE 8010
 CMD ["node", "server.js"]
