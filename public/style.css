@@ -88,3 +88,4 @@ dialog::backdrop{background:#0006}
 #toast[hidden]{display:none}
 .note{font-size:13px;color:var(--muted)}
 [hidden]{display:none!important}
+.chip.ai{border-style:dashed;color:var(--accent);cursor:pointer}

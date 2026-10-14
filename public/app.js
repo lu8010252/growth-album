@@ -59,6 +59,56 @@ function formDialog(title, fields, onOk, okText = '保存', note = '') {
 }
 function confirmBox(msg) { return confirm(msg); }
 
+/* AI 结果弹窗：生成 → 可直接改 → 采用。run(dialog) 返回 {title, body, note?, count?, ...} */
+function aiResultDialog({ heading, controls = '', autoRun = true, runText = '重新生成', useText = '采用', run, onUse }) {
+  const d = document.createElement('dialog');
+  d.innerHTML = `<div class="dlg"><h3>✨ ${esc(heading)}</h3>${controls}<p class="note" id="ains"></p>
+    <div id="airs" hidden><label class="field"><span>标题</span><input type="text" id="ait"></label><label class="field"><span>正文（可以直接改）</span><textarea id="aib" rows="12"></textarea></label></div>
+    <p class="err" hidden></p><div class="row sp"><button type="button" class="btn ghost" data-x>关闭</button><span class="row"><button type="button" class="btn ghost" id="aigo">${autoRun ? runText : '生成'}</button><button type="button" class="btn" id="aiuse" hidden>${useText}</button></span></div></div>`;
+  document.body.appendChild(d); d.showModal();
+  const err = $('.err', d), note = $('#ains', d);
+  d.addEventListener('close', () => d.remove());
+  $('[data-x]', d).onclick = () => d.close();
+  let busy = false;
+  async function go() {
+    if (busy) return; busy = true; err.hidden = true;
+    $('#aigo', d).disabled = true; $('#aiuse', d).disabled = true; note.textContent = 'AI 正在写，通常要十几秒…';
+    try {
+      const r = await run(d); d._meta = r;
+      $('#airs', d).hidden = false; $('#ait', d).value = r.title || ''; $('#aib', d).value = r.body || '';
+      note.textContent = r.note ? '💬 ' + r.note : r.count ? `参考了 ${r.count} 条记录。AI 可能写错细节，保存前请通读一遍。` : 'AI 可能改错细节，采用前请看一眼。';
+      $('#aiuse', d).hidden = false; $('#aigo', d).textContent = runText;
+    } catch (e) { err.textContent = e.message; err.hidden = false; note.textContent = ''; }
+    busy = false; $('#aigo', d).disabled = false; $('#aiuse', d).disabled = false;
+  }
+  $('#aigo', d).onclick = go;
+  $('#aiuse', d).onclick = async () => {
+    try { await onUse({ title: $('#ait', d).value.trim(), body: $('#aib', d).value.trim(), meta: d._meta }, d); d.close(); }
+    catch (e) { err.textContent = e.message; err.hidden = false; }
+  };
+  if (autoRun) go();
+  return d;
+}
+function openReview(defKid) {
+  const now = new Date(), opts = [];
+  const ym = (back) => { const x = new Date(now.getFullYear(), now.getMonth() - back, 1); return [`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`, `${x.getFullYear()}年${x.getMonth() + 1}月`]; };
+  opts.push([ym(1)[0], `上个月（${ym(1)[1]}）`], [ym(0)[0], `本月（${ym(0)[1]}）`]);
+  for (let i = 2; i < 12; i++) opts.push(ym(i));
+  opts.push([String(now.getFullYear()), `今年（${now.getFullYear()}年）`], [String(now.getFullYear() - 1), `去年（${now.getFullYear() - 1}年）`]);
+  const sel = (id, label, os, v) => `<label class="field"><span>${label}</span><select id="${id}">${os.map(([a, b]) => `<option value="${esc(a)}" ${a === v ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select></label>`;
+  aiResultDialog({
+    heading: '成长回顾', autoRun: false, useText: '保存为一条记录',
+    controls: sel('rvk', '给谁写', [['', '全家一起'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], defKid || '') + sel('rvp', '哪段时间', opts, opts[0][0]) +
+      '<p class="note">只会用这段时间的「成长记录」，不会用到任何日记。</p>',
+    run: (d) => api('/api/ai/review', { json: { kidId: $('#rvk', d).value, period: $('#rvp', d).value } }),
+    onUse: async (r) => {
+      const m = r.meta;
+      const p = await api('/api/posts', { json: { type: 'record', date: m.date, title: r.title, body: r.body, kidIds: m.kidIds.join(','), ai: '1' } });
+      toast('已保存'); location.hash = '#/post/' + p.id;
+    },
+  });
+}
+
 /* ---------- 大图查看 ---------- */
 const LB = { list: [], i: 0 };
 function openLB(list, i) { LB.list = list; LB.i = i; showLB(); $('#lb').hidden = false; }
@@ -107,15 +157,16 @@ function cardHtml(p) {
     const src = m.kind === 'video' ? m.poster : (m.thumb || m.url);
     return `<div class="cell">${src ? `<img loading="lazy" src="${src}" alt="">` : ''}${m.kind === 'video' ? '<div class="play">▶</div>' : ''}${i === 3 && p.media.length > 4 ? `<div class="more">+${p.media.length - 4}</div>` : ''}</div>`;
   }).join('')}</div>` : '';
-  return `<a class="card" href="#/post/${p.id}"><div class="meta"><span>${dateText(p.date)}</span>${kidTags(p)}${p.type === 'diary' ? `<span>📖 ${p.visibility === 'private' ? '私密日记' : '日记'}</span>` : ''}</div>
+  return `<a class="card" href="#/post/${p.id}"><div class="meta"><span>${dateText(p.date)}</span>${kidTags(p)}${p.type === 'diary' ? `<span>📖 ${p.visibility === 'private' ? '私密日记' : '日记'}</span>` : ''}${p.ai ? '<span>✨ AI 整理</span>' : ''}</div>
   ${p.title ? `<h3>${esc(p.title)}</h3>` : ''}${p.body ? `<p class="excerpt">${esc(p.body)}</p>` : ''}${grid}
   <div class="foot"><span>${esc(p.authorName)}</span><span>${p.liked ? '❤️' : '🤍'} ${p.likeCount || ''}</span><span>💬 ${p.comments.length || ''}</span></div></a>`;
 }
 async function viewTimeline(mode, qs) {
   const filter = { kid: qs.get('kid') || '', q: qs.get('q') || '' };
   const type = mode === 'diary' ? 'diary' : '';
-  const chips = mode === 'diary' ? '' : `<div class="chips"><a class="chip ${!filter.kid ? 'on' : ''}" href="#/">全部</a>${S.kids.map((k) => `<a class="chip ${filter.kid === k.id ? 'on' : ''}" href="#/?kid=${k.id}">${esc(k.emoji)} ${esc(k.name)}</a>`).join('')}</div>`;
+  const chips = mode === 'diary' ? '' : `<div class="chips"><a class="chip ${!filter.kid ? 'on' : ''}" href="#/">全部</a>${S.kids.map((k) => `<a class="chip ${filter.kid === k.id ? 'on' : ''}" href="#/?kid=${k.id}">${esc(k.emoji)} ${esc(k.name)}</a>`).join('')}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div>`;
   $('#view').innerHTML = `${mode === 'diary' ? '<h2 style="margin:6px 4px 10px">📖 日记</h2>' : ''}${chips}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  if ($('#rv')) $('#rv').onclick = () => openReview(filter.kid);
   let offset = 0, last = '', total = 0;
   const tl = $('#tl');
   async function load() {
@@ -140,7 +191,7 @@ async function viewPost(id) {
     return `<figure><video controls playsinline preload="metadata" ${m.poster ? `poster="${m.poster}"` : ''} src="${m.web || m.url}"></video><figcaption>${m.status === 'processing' ? '⏳ 正在生成手机兼容版本，先播放原片 · ' : ''}<a href="${m.url}" download="${esc(m.name)}">下载原视频 · ${sizeText(m.size)}</a></figcaption></figure>`;
   }).join('');
   $('#view').innerHTML = `<div class="panel post"><div class="meta"><a href="javascript:history.back()">‹ 返回</a><span>${dateText(p.date)}</span>${kidTags(p)}${p.type === 'diary' ? `<span>📖 ${p.visibility === 'private' ? '私密日记' : '日记'}</span>` : ''}</div>
-  ${p.title ? `<h2>${esc(p.title)}</h2>` : ''}<div class="note">${esc(p.authorName)} 记录于 ${p.createdAt.slice(0, 10)}</div>
+  ${p.title ? `<h2>${esc(p.title)}</h2>` : ''}<div class="note">${esc(p.authorName)} 记录于 ${p.createdAt.slice(0, 10)}${p.ai ? ' · ✨ AI 整理，内容请以家人记忆为准' : ''}</div>
   ${p.body ? `<div class="body">${esc(p.body)}</div>` : ''}<div class="media">${media}</div>
   <div class="row" style="margin-top:14px"><button class="btn ghost sm" id="like">${p.liked ? '❤️' : '🤍'} ${p.likeCount || '喜欢'}</button>
   ${p.canEdit ? `<a class="btn ghost sm" href="#/edit/${p.id}">编辑</a>` : ''}${p.canDelete ? '<button class="btn danger sm" id="del">删除</button>' : ''}</div></div>
@@ -176,7 +227,7 @@ async function viewCompose(id, qs) {
     <div class="field"><span>${type === 'diary' ? '关于谁（可不选）' : '是谁的记录（不选＝全家）'}</span>${kidSel}</div>
     <label class="field"><span>日期（这件事发生的那天）</span><input type="date" name="date" value="${post ? post.date : today()}" max="2100-01-01" required></label>
     <label class="field"><span>标题（可不写）</span><input type="text" name="title" maxlength="100" value="${esc(post ? post.title : '')}"></label>
-    <label class="field"><span>${type === 'diary' ? '写下今天的心情…' : '发生了什么、她说了什么有趣的话…'}</span><textarea name="body" rows="8">${esc(post ? post.body : '')}</textarea></label>
+    <label class="field"><span>${type === 'diary' ? '写下今天的心情…' : '发生了什么、她说了什么有趣的话…'}</span><textarea name="body" rows="8">${esc(post ? post.body : '')}</textarea>${S.ai ? `<button type="button" class="btn ghost sm" id="aipolish" style="margin-top:8px">${S.me.role === 'child' ? '✨ AI 帮我看看' : '✨ AI 帮我写'}</button>` : ''}</label>
     ${type === 'diary' ? `<label class="field"><span>谁能看</span><select name="visibility"><option value="private" ${post && post.visibility === 'family' ? '' : 'selected'}>🔒 只有我自己</option><option value="family" ${post && post.visibility === 'family' ? 'selected' : ''}>👨‍👩‍👧 家人都能看</option></select></label>` : ''}
     <div class="field"><span>照片和视频</span><div class="previews" id="pvs"></div>
       <input type="file" id="fi" accept="image/*,video/*" multiple hidden><button type="button" class="btn ghost sm" id="pick" style="margin-top:8px">＋ 选择照片 / 视频</button></div>
@@ -190,6 +241,21 @@ async function viewCompose(id, qs) {
     pvs.querySelectorAll('[data-n]').forEach((b) => (b.onclick = () => { files.splice(+b.dataset.n, 1); drawPv(); }));
   }
   drawPv();
+  if ($('#aipolish')) {
+    const child = S.me.role === 'child', btn = $('#aipolish'), label = btn.textContent; let undo = null;
+    btn.onclick = () => {
+      const f = $('#cf');
+      if (undo) { f.elements.title.value = undo.title; f.elements.body.value = undo.body; undo = null; btn.textContent = label; return; }
+      const src = { body: f.elements.body.value, title: f.elements.title.value, date: f.elements.date.value, kidIds: [...f.querySelectorAll('[name=kid]:checked')].map((c) => c.value) };
+      if (src.body.trim().length < 4) return toast('先随手写几句，再让 AI 帮忙');
+      aiResultDialog({
+        heading: child ? 'AI 帮你看看' : 'AI 帮我写', useText: '替换原文',
+        controls: child ? '' : '<label class="field"><span>风格</span><select id="aistyle"><option value="warm">温暖真诚</option><option value="funny">轻松幽默</option><option value="short">简洁有余味</option></select></label>',
+        run: (d) => api('/api/ai/polish', { json: { ...src, style: $('#aistyle', d) ? $('#aistyle', d).value : '' } }),
+        onUse: (r) => { undo = { title: f.elements.title.value, body: f.elements.body.value }; f.elements.body.value = r.body; if (r.title && !f.elements.title.value.trim()) f.elements.title.value = r.title; btn.textContent = '↩️ 还原原文'; },
+      });
+    };
+  }
   $('#pick').onclick = () => $('#fi').click();
   $('#fi').onchange = (e) => { files = files.concat([...e.target.files]); e.target.value = ''; drawPv(); };
   $('#cf').onsubmit = async (e) => {
@@ -231,6 +297,8 @@ async function viewMe() {
   <div class="panel"><div class="row sp"><h3 style="margin:0">👨‍👩‍👧 家人账号</h3><button class="btn sm" id="au">添加</button></div>
     ${users.map((u) => `<div class="item"><div><b>${esc(u.name)}</b><small>${esc(u.username)} · ${ROLE_NAME[u.role]}${u.kidId && kidOf(u.kidId) ? ' · ' + esc(kidOf(u.kidId).name) : ''}</small></div><div class="row"><button class="btn ghost sm" data-eu="${u.id}">编辑</button>${u.id !== S.me.id ? `<button class="btn danger sm" data-du="${u.id}">删除</button>` : ''}</div></div>`).join('')}
     <p class="note">孩子账号写的日记默认私密，管理员也看不到，除非她自己选择「家人都能看」。</p></div>
+  <div class="panel"><div class="row sp"><h3 style="margin:0">✨ AI 助手</h3><button class="btn ghost sm" id="aic">设置</button></div>
+    <p class="note" style="margin-top:8px">${S.ai ? '已启用：发布页有「AI 帮我写」，时间线有「成长回顾」。' : '未启用。填入 OpenAI 兼容的接口地址（API 中转站，或 Hermes Agent 的 API Server）即可。'}<br>成长回顾只用「成长记录」，不会用到任何日记；「帮我写」只发送你主动点击时输入框里的文字。</p></div>
   <div class="panel"><h3>⚙️ 站点</h3><div class="row sp"><span>名称：${esc(S.title)}</span><button class="btn ghost sm" id="st">修改</button></div>
     <p class="note" style="margin-top:10px">已存 ${stats.posts} 条记录 · ${stats.images} 张照片 · ${stats.videos} 个视频 · 占用 ${sizeText(stats.bytes)}${stats.pending ? ' · ⏳ 视频处理中 ' + stats.pending : ''}</p></div>` : ''}`;
   const refresh = () => boot().then(viewMe);
@@ -250,6 +318,19 @@ async function viewMe() {
   $('#au').onclick = () => formDialog('添加家人账号', uf({}, true), async (v) => { await api('/api/users', { json: v }); await refresh(); });
   $('#view').querySelectorAll('[data-eu]').forEach((b) => (b.onclick = () => formDialog('编辑账号', uf(users.find((u) => u.id === b.dataset.eu), false), async (v) => { await api('/api/users/' + b.dataset.eu, { method: 'PUT', json: v }); await refresh(); })));
   $('#view').querySelectorAll('[data-du]').forEach((b) => (b.onclick = async () => { if (confirmBox('删除这个账号？她发过的内容会保留。')) { await api('/api/users/' + b.dataset.du, { method: 'DELETE' }); await refresh(); } }));
+  $('#aic').onclick = async () => {
+    const c = await api('/api/ai/config');
+    formDialog('AI 助手设置', [
+      { name: 'baseUrl', label: '接口地址（含 /v1）', value: c.baseUrl, placeholder: 'https://你的中转站/v1' },
+      { name: 'apiKey', label: '密钥', type: 'password', placeholder: c.hasKey ? '已保存，不改就留空' : 'sk-…' },
+      { name: 'model', label: '模型名', value: c.model, placeholder: '例如 hermes-agent 或中转站支持的模型名' },
+    ], async (v) => {
+      await api('/api/ai/config', { method: 'PUT', json: v });
+      try { const t = await api('/api/ai/test', { method: 'POST' }); toast('连接成功：' + t.reply); }
+      catch (e) { await refresh(); throw new Error('已保存，但测试没通过：' + e.message); }
+      await refresh();
+    }, '保存并测试', '写文字用普通模型的中转站就行，比 Agent 更快。Hermes Agent 的 API Server 默认是 http://主机:8642/v1，模型名 hermes-agent。');
+  };
   $('#st').onclick = () => formDialog('站点名称', [{ name: 'title', label: '名称', value: S.title }], async (v) => { await api('/api/settings', { method: 'PUT', json: v }); await refresh(); });
 }
 
@@ -274,7 +355,7 @@ async function route() {
 }
 async function boot() {
   const d = await api('/api/init');
-  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup;
+  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai;
 }
 window.addEventListener('hashchange', route);
 boot().then(route).catch((e) => ($('#view').innerHTML = `<div class="empty">无法连接服务器：${esc(e.message)}</div>`));

@@ -27,6 +27,10 @@ const F_USERS = path.join(DATA, 'users.json');
 const F_KIDS = path.join(DATA, 'kids.json');
 const F_SET = path.join(DATA, 'settings.json');
 const F_SECRET = path.join(DATA, 'secret.key');
+const F_AI = path.join(DATA, 'ai.json');
+let aiCfg = readJSON(F_AI, { baseUrl: '', apiKey: '', model: '' });
+const saveAi = () => fs.writeFileSync(F_AI, JSON.stringify(aiCfg, null, 2), { mode: 0o600 });
+const aiReady = () => !!(aiCfg.baseUrl && aiCfg.apiKey && aiCfg.model);
 
 let users = readJSON(F_USERS, []);
 let kids = readJSON(F_KIDS, []);
@@ -97,7 +101,7 @@ function mediaOut(pid, m) {
 function toClient(p, u) {
   return {
     id: p.id, type: p.type, kidIds: p.kidIds, authorId: p.authorId, authorName: userName(p.authorId),
-    date: p.date, title: p.title, body: p.body, visibility: p.visibility, createdAt: p.createdAt,
+    date: p.date, title: p.title, body: p.body, visibility: p.visibility, createdAt: p.createdAt, ai: !!p.ai,
     media: p.media.map((m) => mediaOut(p.id, m)),
     comments: p.comments.map((c) => ({ ...c, name: userName(c.userId), mine: c.userId === u.id })),
     likeCount: p.likes.length, liked: p.likes.includes(u.id),
@@ -200,7 +204,7 @@ const str = (v, n) => String(v ?? '').trim().slice(0, n);
 
 app.get('/api/init', (req, res) => {
   const me = readUser(req);
-  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids : [], settings: { title: settings.title } });
+  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids : [], settings: { title: settings.title }, ai: !!me && aiReady() });
 });
 app.post('/api/setup', (req, res) => {
   if (users.length) return res.status(403).json({ error: '已经初始化过了' });
@@ -317,7 +321,7 @@ app.post('/api/posts', needWrite, (req, res, next) => { req.pid = Date.now().toS
     const f = postFields(req.body, req.user);
     if (!f.title && !f.body && !(req.files || []).length) { await cleanup(); return res.status(400).json({ error: '写点文字或选张照片吧' }); }
     const now = new Date().toISOString();
-    const post = { id: req.pid, ...f, authorId: req.user.id, media: [], comments: [], likes: [], createdAt: now, updatedAt: now };
+    const post = { id: req.pid, ...f, ai: ['1', 'true', true, 1].includes(req.body.ai), authorId: req.user.id, media: [], comments: [], likes: [], createdAt: now, updatedAt: now };
     for (const file of req.files || []) post.media.push(await processUpload(post, file));
     posts.set(post.id, post); savePost(post);
     post.media.filter((m) => m.kind === 'video').forEach((m) => enqueue(post.id, m.id));
@@ -414,6 +418,130 @@ app.get('/api/export', needLogin, async (req, res) => {
     }
   }
   zip.finalize();
+});
+
+/* ---------- AI 助手 ----------
+   走 OpenAI 兼容的 /chat/completions：API 中转站、Hermes Agent 的 API Server 都可以。
+   隐私：成长回顾只用「成长记录」，日记（包括孩子的）一律不参与；
+   「帮我写」只发送用户当前在输入框里、主动点击按钮的那段文字。 */
+async function aiChat(messages, { temperature = 0.7, timeout = 180e3 } = {}) {
+  const url = aiCfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+  let r;
+  try {
+    r = await fetch(url, {
+      method: 'POST', signal: AbortSignal.timeout(timeout),
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + aiCfg.apiKey },
+      body: JSON.stringify({ model: aiCfg.model, messages, temperature, stream: false }),
+    });
+  } catch (e) { throw new Error('连不上 AI 服务：' + (e.name === 'TimeoutError' ? '等太久超时了' : (e.cause && e.cause.code) || e.message)); }
+  const t = await r.text(); let d = null; try { d = JSON.parse(t); } catch {}
+  if (!r.ok) throw new Error(`AI 服务返回 ${r.status}：` + String((d && ((d.error && d.error.message) || d.error)) || t).slice(0, 200));
+  let c = d && d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content;
+  if (Array.isArray(c)) c = c.map((x) => x.text || '').join('');
+  c = String(c || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (!c) throw new Error('AI 没有返回内容');
+  return c;
+}
+function parseAi(text) {
+  const a = text.indexOf('{'), b = text.lastIndexOf('}');
+  if (a >= 0 && b > a) {
+    try { const o = JSON.parse(text.slice(a, b + 1)); if (typeof o.body === 'string' && o.body.trim()) return { title: str(o.title, 100), body: o.body.trim(), note: str(o.note, 100) }; } catch {}
+  }
+  return { title: '', body: text.replace(/^```\w*\n?|\n?```$/g, '').trim(), note: '' };
+}
+function ageText(b, d) {
+  if (!b) return '';
+  const x = new Date(b + 'T00:00:00'), y = new Date(d + 'T00:00:00');
+  if (y < x) return '出生前';
+  let Y = y.getFullYear() - x.getFullYear(), M = y.getMonth() - x.getMonth();
+  if (y.getDate() < x.getDate()) M--;
+  if (M < 0) { Y--; M += 12; }
+  if (Y <= 0 && M <= 0) { const n = Math.round((y - x) / 864e5); return n === 0 ? '出生当天' : `出生第${n}天`; }
+  return Y > 0 ? (M > 0 ? `${Y}岁${M}个月` : `${Y}岁`) : `${M}个月`;
+}
+const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+app.get('/api/ai/config', needAdmin, (req, res) => res.json({ baseUrl: aiCfg.baseUrl, model: aiCfg.model, hasKey: !!aiCfg.apiKey }));
+app.put('/api/ai/config', needAdmin, (req, res) => {
+  const baseUrl = str(req.body.baseUrl, 300), model = str(req.body.model, 100), key = str(req.body.apiKey, 500);
+  if (baseUrl && !/^https?:\/\//i.test(baseUrl)) return res.status(400).json({ error: '地址要以 http:// 或 https:// 开头' });
+  aiCfg.baseUrl = baseUrl; aiCfg.model = model;
+  if (key) aiCfg.apiKey = key;
+  if (req.body.clearKey) aiCfg.apiKey = '';
+  saveAi(); res.json({ ok: true, ready: aiReady() });
+});
+const aiBusy = new Set();
+const aiGuard = (req, res, next) => {
+  if (!aiReady()) return res.status(400).json({ error: '管理员还没有配置 AI（「我的」页 → AI 助手）' });
+  if (aiBusy.has(req.user.id)) return res.status(429).json({ error: '上一个 AI 请求还没完成，稍等一下' });
+  aiBusy.add(req.user.id); res.on('close', () => aiBusy.delete(req.user.id)); next();
+};
+app.post('/api/ai/test', needAdmin, async (req, res) => {
+  try { res.json({ reply: (await aiChat([{ role: 'user', content: '请只回复“收到”两个字。' }], { timeout: 60e3 })).slice(0, 60) }); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+const STYLES = { warm: '语气真诚温暖、自然口语', funny: '语气轻松幽默、带点俏皮，但不油腻', short: '尽量简洁，几句话说清楚，留白有余味' };
+app.post('/api/ai/polish', needWrite, aiGuard, async (req, res) => {
+  const body = String(req.body.body || '').trim();
+  if (body.length < 4) return res.status(400).json({ error: '先随手写几句，再让 AI 帮忙' });
+  if (body.length > 8000) return res.status(400).json({ error: '内容太长了，分几次整理吧' });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.body.date || '') ? req.body.date : localDay();
+  const ids = Array.isArray(req.body.kidIds) ? req.body.kidIds : [];
+  const who = ids.map((id) => kids.find((k) => k.id === id)).filter(Boolean).map((k) => k.name + (k.birthday ? `（那时${ageText(k.birthday, date)}）` : '')).join('、');
+  const title = str(req.body.title, 100);
+  const child = req.user.role === 'child';
+  const system = child
+    ? '你在帮一个小学生修改她自己写的日记。只改错别字、标点和明显不通顺的句子，保留她自己的口吻、想法和用词，不要改写成大人腔，不要添加原文没有的内容。' +
+      '另外给一句具体的、真诚的鼓励（不超过30字，指出她写得好的某个地方）。只输出 JSON：{"title":"原标题；没有就起一个不超过10字的","body":"修改后的正文","note":"鼓励的话"}，不要输出任何其他内容。'
+    : '你是一位温柔细腻的中文写作助手，帮家人把随手记下的孩子成长片段整理成值得长大后回看的文字。要求：' +
+      '1. 严格忠于原文，不添加原文没有的情节、人名、地点、对话；2. 保留孩子说的原话；3. ' + (STYLES[req.body.style] || STYLES.warm) + '，不堆砌辞藻，不说教；' +
+      '4. 篇幅与原文相当，最多比原文长一半；5. 保持原文的叙述视角和对孩子的称呼；6. 用空行分段，不使用 Markdown 标记。' +
+      '只输出 JSON：{"title":"不超过12字的标题","body":"整理后的正文"}，不要输出任何其他内容。';
+  const user = `日期：${date}\n${who ? '关于：' + who + '\n' : ''}${title ? '原标题：' + title + '\n' : ''}原文：\n${body}`;
+  try { res.json(parseAi(await aiChat([{ role: 'system', content: system }, { role: 'user', content: user }], { timeout: 120e3 }))); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+function periodRange(p) {
+  if (/^\d{4}-\d{2}$/.test(p)) {
+    const [y, m] = p.split('-').map(Number); if (m < 1 || m > 12) return null;
+    return { from: `${p}-01`, to: `${p}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`, label: `${y}年${m}月`, year: false };
+  }
+  if (/^\d{4}$/.test(p)) return { from: p + '-01-01', to: p + '-12-31', label: p + '年', year: true };
+  return null;
+}
+app.post('/api/ai/review', needWrite, aiGuard, async (req, res) => {
+  if (req.user.role === 'child') return res.status(403).json({ error: '成长回顾由家长生成' });
+  const r = periodRange(String(req.body.period || '')); if (!r) return res.status(400).json({ error: '时间范围不对' });
+  const kid = kids.find((k) => k.id === req.body.kidId) || null;
+  const list = [...posts.values()]
+    .filter((p) => p.type === 'record' && p.date >= r.from && p.date <= r.to && (!kid || p.kidIds.includes(kid.id) || !p.kidIds.length))
+    .sort((a, b) => (a.date === b.date ? (a.createdAt < b.createdAt ? -1 : 1) : a.date < b.date ? -1 : 1));
+  if (!list.length) return res.status(400).json({ error: `${r.label}还没有${kid ? kid.name + '的' : ''}成长记录` });
+  let sample = list;
+  if (list.length > 100) sample = Array.from({ length: 100 }, (_, i) => list[Math.floor((i * list.length) / 100)]);
+  const cap = list.length > 100 ? 200 : 400;
+  let lines = sample.map((p) => {
+    const age = kid ? ageText(kid.birthday, p.date) : '';
+    const names = kid ? '' : p.kidIds.map((id) => (kids.find((k) => k.id === id) || {}).name).filter(Boolean).join('、');
+    const im = p.media.filter((m) => m.kind === 'image').length, vd = p.media.length - im;
+    const extra = [im && im + '张照片', vd && vd + '个视频'].filter(Boolean).join('、');
+    const cm = p.comments.slice(0, 2).map((c) => `${userName(c.userId)}说：${c.text.slice(0, 40)}`).join('；');
+    return `【${p.date}${age ? '｜' + age : ''}${names ? '｜' + names : ''}】${p.title ? p.title + '。' : ''}${p.body.slice(0, cap)}${extra ? `（附${extra}）` : ''}${cm ? ` 家人评论：${cm}` : ''}`;
+  });
+  let text = lines.join('\n\n'); if (text.length > 60000) text = text.slice(0, 60000);
+  const whoDesc = kid ? `孩子：${kid.name}${kid.birthday ? '（' + kid.birthday + ' 出生）' : ''}` : '孩子们：' + kids.map((k) => k.name + (k.birthday ? '（' + k.birthday + ' 出生）' : '')).join('、');
+  const system = '你是一位善于讲故事的家庭记录整理者。根据家人在一段时期里记下的片段，写一篇成长回顾，让孩子长大后读到会会心一笑、也会被打动。要求：' +
+    '1. 只使用提供的内容，不编造事实、日期、人物或对话；2. 按时间自然串起来，不要写成流水账，挑出最有意思的几个瞬间展开讲；' +
+    '3. 如果能从内容里看出这段时间的变化或成长，点出来；4. 保留孩子说的原话；5. 语气温暖真诚，不煽情，不说教；' +
+    `6. 篇幅${r.year ? '800~1500' : '500~900'}字，分 3~6 段，用空行分段，不使用 Markdown 标记；若素材很少就写短一点，不要凑字数。` +
+    '只输出 JSON：{"title":"不超过16字的标题","body":"正文"}，不要输出任何其他内容。';
+  const user = `${whoDesc}\n时期：${r.label}\n共 ${list.length} 条记录${list.length > 100 ? '（以下均匀抽取了 100 条）' : ''}：\n\n${text}`;
+  try {
+    const out = parseAi(await aiChat([{ role: 'system', content: system }, { role: 'user', content: user }], { timeout: 180e3 }));
+    res.json({ title: out.title || `${r.label} · ${kid ? kid.name + '的' : ''}成长回顾`, body: out.body, count: list.length, date: r.to < localDay() ? r.to : localDay(), kidIds: kid ? [kid.id] : [] });
+  } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
 /* 存储用量 */

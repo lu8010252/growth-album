@@ -8,6 +8,8 @@ services:
     environment:
       - MAX_UPLOAD_MB=2048
       - TZ=Asia/Shanghai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # 容器内访问宿主机上的 AI 服务时用 http://host.docker.internal:端口
     volumes:
       # 所有照片、视频、文字都在这个文件夹，备份它就等于备份全部
       - ./data:/app/data
