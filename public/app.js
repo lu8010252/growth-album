@@ -586,7 +586,7 @@ async function viewMe() {
   <div class="panel"><h3>${esc(S.me.name)}</h3><p class="note">${ROLE_NAME[S.me.role]} · 用户名 ${esc(S.me.username)}</p>
     <div class="row"><button class="btn ghost sm" id="rn">改名字</button><button class="btn ghost sm" id="pw">改密码</button><button class="btn ghost sm" id="lo">退出登录</button></div></div>
   <div class="panel"><h3>📦 导出</h3><p class="note">打包成 zip：里面有原图原视频、每条记录的文字，用浏览器打开 index.html 就能离线翻看。长大后转给她们就用这个。</p><div class="row">${exportBtns}</div></div>
-  <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频，生日聚会时拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvst" class="note" style="margin-top:8px"></div></div>
+  <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频，生日聚会时拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。做好的视频暂存在服务器上约 6 小时，用完可以点「🗑 删除」释放空间。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvl"></div></div>
   ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
@@ -599,23 +599,28 @@ async function viewMe() {
   <div class="panel"><h3>⚙️ 站点</h3><div class="row sp"><span>名称：${esc(S.title)}</span><button class="btn ghost sm" id="st">修改</button></div>
     <p class="note" style="margin-top:10px">已存 ${stats.posts} 条记录 · ${stats.images} 张照片 · ${stats.videos} 个视频 · 占用 ${sizeText(stats.bytes)}${stats.pending ? ' · ⏳ 视频处理中 ' + stats.pending : ''}</p></div>` : ''}`;
   const refresh = () => boot().then(viewMe);
-  const pollMovie = (id) => {
-    S.movieId = id; clearInterval(pollMovie.t);
-    const show = (h) => { const el = $('#mvst'); if (el) el.innerHTML = h; return !!el; };
-    const tick = async () => {
-      let j; try { j = await api('/api/movie/' + id); } catch (e) { S.movieId = null; show(esc(e.message)); return clearInterval(pollMovie.t); }
-      if (!show(j.state === 'running' ? `⏳ 生成中 ${j.done} / ${j.total}……` : j.state === 'done' ? `✅ 做好了（${sizeText(j.size)}）<a class="btn sm" style="margin-left:8px" href="/api/movie/${id}/file" download>⬇ 下载 MP4</a>` : esc(j.error || '生成失败'))) return clearInterval(pollMovie.t);
-      if (j.state !== 'running') clearInterval(pollMovie.t);
-    };
-    tick(); pollMovie.t = setInterval(tick, 2000);
+  const mvTime = (t) => { const d = new Date(t), z = (n) => String(n).padStart(2, '0'); return `${d.getMonth() + 1}月${d.getDate()}日 ${z(d.getHours())}:${z(d.getMinutes())}`; };
+  const mvPlay = (id) => {
+    const d = document.createElement('dialog'); d.style.width = 'min(780px,94vw)';
+    d.innerHTML = `<div style="padding:12px"><video controls autoplay playsinline src="/api/movie/${id}/file?inline=1" style="width:100%;max-height:72vh;background:#000;border-radius:14px"></video><div class="row sp" style="margin-top:10px"><span class="note">点视频右下角全屏，或用手机/电脑投屏，就能在大屏上播放</span><button class="btn ghost sm" data-x>关闭</button></div></div>`;
+    document.body.appendChild(d); d.showModal(); $('[data-x]', d).onclick = () => d.close(); d.addEventListener('close', () => d.remove());
+  };
+  const mvList = async () => {
+    clearTimeout(mvList.t); if (!$('#mvl')) return;
+    let list; try { list = await api('/api/movie'); } catch { return; }
+    const el = $('#mvl'); if (!el) return;
+    el.innerHTML = list.map((j) => `<div class="item" style="margin-top:8px"><div><b>${esc(j.name)}</b><small>${mvTime(j.at)} · ${j.state === 'running' ? `⏳ 生成中 ${j.done} / ${j.total}……` : j.state === 'done' ? '✅ ' + sizeText(j.size) : '⚠️ ' + esc(j.error || '生成失败')}</small></div><div class="row">${j.state === 'done' ? `<a class="lnk" data-play="${j.id}">▶ 播放</a><a class="lnk" href="/api/movie/${j.id}/file" download>⬇ 下载</a>` : ''}${j.state !== 'running' ? `<a class="lnk" data-del="${j.id}">🗑 删除</a>` : ''}</div></div>`).join('');
+    el.querySelectorAll('[data-play]').forEach((a) => (a.onclick = () => mvPlay(a.dataset.play)));
+    el.querySelectorAll('[data-del]').forEach((a) => (a.onclick = async () => { if (!confirmBox('删除这个视频文件？')) return; try { await api('/api/movie/' + a.dataset.del, { method: 'DELETE' }); } catch (e) { toast(e.message); } mvList(); }));
+    if (list.some((j) => j.state === 'running')) mvList.t = setTimeout(mvList, 2000);
   };
   $('#mv').onclick = () => formDialog('生成回顾视频', [
     { name: 'kid', label: '谁的', type: 'select', options: [['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], value: '' },
     { name: 'since', label: '从（可留空）', type: 'date', value: '' },
     { name: 'until', label: '到（可留空）', type: 'date', value: '' },
     { name: 'secs', label: '每张停留', type: 'select', options: [['3', '3 秒'], ['4', '4 秒'], ['5', '5 秒'], ['6', '6 秒'], ['8', '8 秒']], value: '4' }],
-  async (v) => { const r = await api('/api/movie', { json: v }); toast(`开始生成，共 ${r.total} 张照片`); pollMovie(r.id); }, '开始生成', '最多取 120 张，超出会均匀抽样。');
-  if (S.movieId) pollMovie(S.movieId);
+  async (v) => { const r = await api('/api/movie', { json: v }); toast(`开始生成，共 ${r.total} 张照片`); mvList(); }, '开始生成', '最多取 120 张，超出会均匀抽样。');
+  mvList();
   $('#rn').onclick = () => formDialog('改名字', [{ name: 'name', label: '名字', value: S.me.name }], async (v) => { await api('/api/me', { method: 'PUT', json: v }); await refresh(); });
   $('#pw').onclick = () => formDialog('改密码', [{ name: 'old', label: '旧密码', type: 'password' }, { name: 'pw', label: '新密码（至少 6 位）', type: 'password' }], async (v) => { await api('/api/me/password', { json: v }); toast('密码已修改'); });
   if ($('#sw')) $('#sw').onclick = () => { location.href = 'https://localhost/index.html?reset=1'; };

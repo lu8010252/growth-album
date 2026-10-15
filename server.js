@@ -678,8 +678,20 @@ app.post('/api/movie', needLogin, (req, res) => {
   res.json({ id, total: slides.length });
 });
 const myMovie = (req, res) => { const j = movies.get(req.params.id); if (!j || (j.userId !== req.user.id && req.user.role !== 'admin')) { res.status(404).json({ error: '没有这个视频（可能已过期，重新生成一次即可）' }); return null; } return j; };
-app.get('/api/movie/:id', needLogin, (req, res) => { const j = myMovie(req, res); if (j) res.json({ state: j.state, done: j.done, total: j.total, size: j.size, error: j.error }); });
-app.get('/api/movie/:id/file', needLogin, (req, res) => { const j = myMovie(req, res); if (j) { if (j.state !== 'done') return res.status(409).json({ error: '还没生成完' }); res.download(j.file, j.name); } });
+const movieInfo = (j) => ({ id: j.id, state: j.state, done: j.done, total: j.total, size: j.size, error: j.error, name: j.name, at: j.at });
+app.get('/api/movie', needLogin, (req, res) => res.json([...movies.values()].filter((j) => j.userId === req.user.id).sort((a, b) => b.at - a.at).map(movieInfo)));
+app.get('/api/movie/:id', needLogin, (req, res) => { const j = myMovie(req, res); if (j) res.json(movieInfo(j)); });
+app.get('/api/movie/:id/file', needLogin, (req, res) => {
+  const j = myMovie(req, res); if (!j) return;
+  if (j.state !== 'done') return res.status(409).json({ error: '还没生成完' });
+  if (req.query.inline) return res.sendFile(j.file, { headers: { 'Content-Type': 'video/mp4' } });   // 在线播放（支持拖动进度）
+  res.download(j.file, j.name);
+});
+app.delete('/api/movie/:id', needLogin, (req, res) => {
+  const j = myMovie(req, res); if (!j) return;
+  if (j.state === 'running') return res.status(409).json({ error: '还在生成中，做完以后再删' });
+  fsp.rm(j.file, { force: true }).catch(() => {}); movies.delete(j.id); res.json({ ok: true });
+});
 
 /* ---------- AI 助手 ----------
    走 OpenAI 兼容的 /chat/completions：API 中转站、Hermes Agent 的 API Server 都可以。
