@@ -4,6 +4,17 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const S = { me: null, kids: [], title: '成长册' };
 const ROLE_NAME = { admin: '管理员', member: '家人（可发布）', viewer: '家人（只读）', child: '孩子' };
 const IN_APP = /GrowthAlbumApp/.test(navigator.userAgent); // Android 外壳
+// 成长记录分类：[id, 图标, 名称, 颜色]
+const CATS = [['daily', '🌤', '日常', '#7d9a94'], ['travel', '🧳', '旅行', '#3f93c0'], ['award', '🏅', '奖状荣誉', '#d99a22'], ['exam', '📝', '考试成绩', '#7a6fc4'], ['first', '🌱', '第一次', '#4fa872'], ['birthday', '🎂', '生日', '#e0607e'], ['school', '🎒', '学校', '#d6843f'], ['hobby', '🎨', '兴趣特长', '#a864c0'], ['festival', '🧧', '节日', '#d4504b']];
+const catOf = (id) => CATS.find((c) => c[0] === id) || CATS[0];
+const catTag = (p) => (p.type === 'record' && p.category && p.category !== 'daily' ? `<span class="tag cat" style="--c:${catOf(p.category)[3]}">${catOf(p.category)[1]} ${catOf(p.category)[2]}</span>` : '');
+const ICON = {
+  home: '<svg viewBox="0 0 24 24" class="ic"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/></svg>',
+  gift: '<svg viewBox="0 0 24 24" class="ic"><rect x="3.5" y="8" width="17" height="4" rx="1"/><path d="M5 12v8h14v-8M12 8v12"/><path d="M12 8c-2.5 0-4-1-4-2.5S10 3 12 8c2-5 4-4.5 4-2.5S14.500 8 12 8Z"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg>',
+  book: '<svg viewBox="0 0 24 24" class="ic"><path d="M4 5.5C4 4.700 4.700 4 5.500 4H11v16H5.500C4.700 20 4 19.300 4 18.500Z"/><path d="M20 5.500c0-.8-.7-1.500-1.500-1.500H13v16h5.500c.8 0 1.500-.7 1.500-1.500Z"/></svg>',
+  me: '<svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="8.500" r="3.800"/><path d="M4.500 20c.8-4 3.700-6 7.500-6s6.700 2 7.500 6"/></svg>',
+};
 const canWrite = () => S.me && S.me.role !== 'viewer';
 
 /* ---------- 工具 ---------- */
@@ -146,9 +157,9 @@ function chrome(route) {
   $('#brand').textContent = S.title; document.title = S.title;
   if (!on) return;
   $('#who').textContent = S.me.name;
-  const tabs = [['#/', '🏡', '首页', ''], ['#/treasure', '🎁', '珍藏', 'treasure'], ['#/diary', '📖', '日记', 'diary']];
-  if (canWrite()) tabs.splice(1, 0, ['#/new', '＋', '', 'add']);
-  tabs.push(['#/me', '🙂', '我的', 'me']);
+  const tabs = [['#/', ICON.home, '首页', ''], ['#/treasure', ICON.gift, '珍藏', 'treasure'], ['#/diary', ICON.book, '日记', 'diary']];
+  if (canWrite()) tabs.splice(1, 0, ['#/new', ICON.plus, '', 'add']);
+  tabs.push(['#/me', ICON.me, '我的', 'me']);
   $('#tabs').innerHTML = tabs.map(([h, ic, t, k]) => `<a href="${h}" class="${k === 'add' ? 'add' : ''} ${route === k || (k === '' && route === '') ? 'on' : ''}"><b>${ic}</b>${t}</a>`).join('');
 }
 
@@ -174,33 +185,60 @@ function kidChipsHtml(base, active, together, extra = '') {
   const chip = (k, label) => `<a class="chip ${active === k ? 'on' : ''}" href="${href(k)}">${label}</a>`;
   return chip('', '全部') + S.kids.map((k) => chip(k.id, `${esc(k.emoji)} ${esc(k.name)}`)).join('') + (together && S.kids.length > 1 ? chip('together', '👭 双宝日常') : '');
 }
-function cardHtml(p) {
+function cardHtml(p, rail) {
   const vis = p.media.filter((m) => m.kind !== 'audio'), nAud = p.media.length - vis.length;
   const imgs = vis.slice(0, 4);
   const grid = imgs.length ? `<div class="grid n${imgs.length}">${imgs.map((m, i) => {
     const src = m.kind === 'video' ? m.poster : (m.thumb || m.url);
     return `<div class="cell">${src ? `<img loading="lazy" src="${src}" alt="">` : ''}${m.kind === 'video' ? '<div class="play">▶</div>' : ''}${i === 3 && vis.length > 4 ? `<div class="more">+${vis.length - 4}</div>` : ''}</div>`;
   }).join('')}</div>` : '';
-  return `<a class="card" href="#/post/${p.id}"><div class="meta"><span>${dateText(p.date)}</span>${kidTags(p)}${p.type === 'diary' ? `<span>📖 ${p.visibility === 'private' ? '私密日记' : '日记'}</span>` : ''}${p.type === 'capsule' ? '<span>✉️ 时间胶囊</span>' : ''}${p.ai ? '<span>✨ AI 整理</span>' : ''}</div>
+  const card = `<a class="card" href="#/post/${p.id}"><div class="meta">${rail ? '' : `<span>${dateText(p.date)}</span>`}${kidTags(p)}${catTag(p)}${p.type === 'diary' ? `<span>📖 ${p.visibility === 'private' ? '私密日记' : '日记'}</span>` : ''}${p.type === 'capsule' ? '<span>✉️ 时间胶囊</span>' : ''}${p.ai ? '<span>✨ AI 整理</span>' : ''}</div>
   ${p.title ? `<h3>${esc(p.title)}</h3>` : ''}${p.body ? `<p class="excerpt">${esc(p.body)}</p>` : ''}${grid}
-  <div class="foot"><span>${esc(p.authorName)}</span><span>${p.liked ? '❤️' : '🤍'} ${p.likeCount || ''}</span><span>💬 ${p.comments.length || ''}</span>${nAud ? `<span>🎙 ${nAud}</span>` : ''}</div></a>`;
+  <div class="foot"><span>${esc(p.authorName)}</span><span class="sp"></span><span>${p.liked ? '❤️' : '🤍'} ${p.likeCount || ''}</span><span>💬 ${p.comments.length || ''}</span>${nAud ? `<span>🎙 ${nAud}</span>` : ''}</div></a>`;
+  if (!rail) return card;
+  const wd = WD[new Date(p.date + 'T00:00:00').getDay()];
+  return `<div class="tli"><div class="rail"><b>${+p.date.slice(8)}</b><small>周${wd}</small></div>${card}</div>`;
+}
+const greet = () => { const h = new Date().getHours(); return h < 6 ? '夜深了' : h < 11 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好'; };
+function heroHtml() {
+  const kids = S.kids.map((k) => `<div class="kp"><i style="background:${k.color}">${esc(k.emoji)}</i><b>${esc(k.name)}</b>${k.birthday ? `<small>${ageText(k.birthday, today())}</small>` : ''}</div>`).join('');
+  return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}</div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>` : ''}</section>`;
+}
+// 筛选条：孩子 + 分类，两者可以叠加
+function filterHref(kid, cat) { const a = [kid ? 'kid=' + kid : '', cat ? 'cat=' + cat : ''].filter(Boolean).join('&'); return '#/' + (a ? '?' + a : ''); }
+function catChipsHtml(kid, cat) {
+  return `<a class="chip ${cat ? '' : 'on'}" href="${filterHref(kid, '')}">全部分类</a>` + CATS.map(([id, ic, n]) => `<a class="chip ${cat === id ? 'on' : ''}" href="${filterHref(kid, id)}">${ic} ${n}</a>`).join('');
+}
+async function loadOnThisDay() {
+  const box = $('#otd'); if (!box) return;
+  let list = []; try { list = await api('/api/onthisday'); } catch { return; }
+  if (!list.length || !$('#otd')) return;
+  const y = +today().slice(0, 4);
+  box.innerHTML = `<div class="otd"><h3>📅 那年今天</h3><div class="strip">${list.map((p) => {
+    const m = p.media.find((x) => x.kind === 'image' || (x.kind === 'video' && x.poster)), src = m ? (m.kind === 'video' ? m.poster : (m.thumb || m.url)) : '';
+    const txt = p.title || (p.body || '').slice(0, 24) || '一段回忆';
+    return `<a class="mem ${src ? '' : 'nopic'}" href="#/post/${p.id}">${src ? `<img loading="lazy" src="${src}" alt="">` : ''}<span class="yr">${y - +p.date.slice(0, 4)} 年前</span><b>${esc(txt)}</b></a>`;
+  }).join('')}</div></div>`;
 }
 async function viewTimeline(mode, qs) {
-  const filter = { kid: qs.get('kid') || '', q: qs.get('q') || '' };
+  const filter = { kid: qs.get('kid') || '', q: qs.get('q') || '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '' };
   const type = mode === 'diary' ? 'diary' : '';
-  const chips = mode === 'diary' ? '' : `<div class="chips">${kidChipsHtml('#/', filter.kid, true)}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div>`;
-  $('#view').innerHTML = `${mode === 'diary' ? '<h2 style="margin:6px 4px 10px">📖 日记</h2>' : ''}${chips}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  const plain = mode === 'home' && !filter.kid && !filter.cat;
+  const chips = mode === 'diary' ? '' : `<div class="chips">${kidChipsHtml('#/', filter.kid, true, filter.cat ? 'cat=' + filter.cat : '')}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div><div class="chips cats">${catChipsHtml(filter.kid, filter.cat)}</div>`;
+  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : plain ? heroHtml() + '<div id="otd"></div>' : ''}${chips}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  if (plain) loadOnThisDay();
   if ($('#rv')) $('#rv').onclick = () => openReview(filter.kid);
   let offset = 0, last = '', total = 0;
   const tl = $('#tl');
   async function load() {
-    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}`;
+    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}`;
     const d = await api(u); total = d.total;
+    if (plain && $('#tot') && total) $('#tot').textContent = `已经记下 ${total} 个瞬间`;
     let h = '';
-    for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span>${m}</span></div>`; } h += cardHtml(p); }
+    for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span>${m}</span></div>`; } h += cardHtml(p, true); }
     tl.insertAdjacentHTML('beforeend', h); offset += d.items.length;
     $('#more').hidden = offset >= total || !d.items.length;
-    if (!total) tl.innerHTML = `<div class="empty">${mode === 'diary' ? '还没有日记' : '还没有记录'}${canWrite() ? '<br>点下面的 ＋ 写下第一条吧' : ''}</div>`;
+    if (!total) tl.innerHTML = `<div class="empty">${mode === 'diary' ? '还没有日记' : filter.cat ? `还没有「${catOf(filter.cat)[2]}」的记录` : '还没有记录'}${canWrite() ? (filter.cat ? `<br><br><a class="btn" href="#/new?cat=${filter.cat}">记一条${catOf(filter.cat)[2]}</a>` : '<br>点下面的 ＋ 写下第一条吧') : ''}</div>`;
   }
   $('#more button').onclick = () => load().catch((e) => toast(e.message));
   await load();
@@ -233,7 +271,7 @@ async function viewPost(id, keepY) {
   }).join('');
   const bk = (p.kidIds.length ? p.kidIds.map(kidOf).filter((k) => k && k.birthday) : S.kids.filter((k) => k.birthday));
   const others = people.filter((u) => u.id !== S.me.id);
-  $('#view').innerHTML = `<div class="panel post"><div class="meta"><a href="javascript:history.back()">‹ 返回</a><span>${dateText(p.date)}</span>${kidTags(p)}${typeLabel(p)}</div>
+  $('#view').innerHTML = `<div class="panel post"><div class="meta"><a href="javascript:history.back()">‹ 返回</a><span>${dateText(p.date)}</span>${kidTags(p)}${catTag(p)}${typeLabel(p)}</div>
   ${p.title ? `<h2>${esc(p.title)}</h2>` : ''}<div class="note">${esc(p.authorName)} 记录于 ${p.createdAt.slice(0, 10)}${p.ai ? ' · ✨ AI 整理，内容请以家人记忆为准' : ''}</div>
   ${p.body ? `<div class="body">${esc(p.body)}</div>` : ''}<div class="media">${media}</div>
   <div class="row" style="margin-top:14px"><button class="btn ghost sm" id="like">${p.liked ? '❤️' : '🤍'} ${p.likeCount || '喜欢'}</button>
@@ -295,6 +333,7 @@ async function viewCompose(id, qs) {
   const visOpts = type === 'diary' ? [['private', '🔒 只有我自己'], ['family', '👨‍👩‍👧 家人都能看']] : [['private', '🎁 只给收信的孩子（和我自己）'], ['family', '👨‍👩‍👧 开启后家人都能看']];
   $('#view').innerHTML = `<form class="panel" id="cf"><h3 style="margin:0">${post ? '编辑' : '新'}${names[type]}</h3>${typeSw}
     <div class="field"><span>${cap ? '写给谁（可多选；按「满几岁」解锁时以第一个为准）' : type === 'diary' ? '关于谁（可不选）' : '是谁的记录（不选＝全家；选两个＝双宝日常）'}</span>${kidSel}</div>
+    ${type === 'record' ? `<div class="field"><span>分类</span><div class="sel">${CATS.map(([id, ic, n]) => `<label><input type="radio" name="category" value="${id}" ${(post ? post.category || 'daily' : CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : 'daily') === id ? 'checked' : ''}><span>${ic} ${n}</span></label>`).join('')}</div></div>` : ''}
     ${cap ? '' : `<label class="field"><span>日期（这件事发生的那天）</span><input type="date" name="date" value="${post ? post.date : today()}" max="2100-01-01" required></label>`}
     ${fresh ? `<div class="field"><span>什么时候开启</span><div class="row"><select name="unlockMode" id="um"><option value="date">指定日期</option><option value="age">孩子满几岁那天</option></select><input type="date" name="unlockDate" id="ud" min="${addYears(today(), 0)}"><span id="ua" hidden><input type="text" inputmode="numeric" name="unlockAge" id="uai" placeholder="18" maxlength="2" style="width:64px"> 岁</span></div><p class="note" id="uh"></p></div>
       <p class="note">⚠️ 封存之后，连你自己也看不到内容，要等到开启那天。写好再封存吧。</p>` : ''}
@@ -372,7 +411,7 @@ async function viewCompose(id, qs) {
       let res;
       if (!post) {
         const fd = new FormData(); fd.append('type', type);
-        ['date', 'title', 'body', 'visibility', 'unlockMode', 'unlockDate', 'unlockAge'].forEach((k) => v[k] !== undefined && fd.append(k, v[k]));
+        ['date', 'title', 'body', 'visibility', 'category', 'unlockMode', 'unlockDate', 'unlockAge'].forEach((k) => v[k] !== undefined && fd.append(k, v[k]));
         fd.append('kidIds', kidIds.join(',')); files.forEach((f) => fd.append('files', f));
         res = await xhrSend('/api/posts', 'POST', fd, prog);
       } else {
@@ -386,8 +425,14 @@ async function viewCompose(id, qs) {
 
 /* ---------- 珍藏：成长数据 / 声音档案 / 时间胶囊 / 生日问答 ---------- */
 function viewTreasure() {
-  const tiles = [['#/growth', '📈', '成长数据', '身高、体重、鞋码的变化曲线'], ['#/voice', '🎙', '声音档案', '听听她们小时候的声音'], ['#/capsule', '✉️', '时间胶囊', '写给未来的信，到时间才能打开'], ['#/qa', '🎂', '生日问答', '每年生日问同样的问题，长大后对比']];
-  $('#view').innerHTML = `<h2 style="margin:6px 4px 10px">🎁 珍藏</h2><div class="tiles">${tiles.map(([h, i, t, d]) => `<a class="tile" href="${h}"><b>${i}</b><span>${t}</span><small>${d}</small></a>`).join('')}</div>`;
+  const tiles = [['#/cats', '🗂', '分类相册', '旅行、奖状、考试、第一次……按类别翻看', 'wide'], ['#/growth', '📈', '成长数据', '身高、体重、鞋码的变化曲线'], ['#/voice', '🎙', '声音档案', '听听她们小时候的声音'], ['#/capsule', '✉️', '时间胶囊', '写给未来的信，到时间才能打开'], ['#/qa', '🎂', '生日问答', '每年生日问同样的问题，长大后对比']];
+  $('#view').innerHTML = `<h2 class="ptitle">🎁 珍藏</h2><div class="tiles">${tiles.map(([h, i, t, d, w]) => `<a class="tile ${w || ''}" href="${h}"><b>${i}</b><span>${t}</span><small>${d}</small></a>`).join('')}</div>`;
+}
+/* 分类相册：每个分类一张封面，点进去就是该分类的时间线 */
+async function viewCats() {
+  const d = await api('/api/cats');
+  $('#view').innerHTML = `<h2 class="ptitle">🗂 分类相册</h2><p class="note" style="margin:0 4px 12px">旅行、奖状、考试、第一次……发布记录时选一个分类，就会出现在这里。</p>
+  <div class="catgrid">${CATS.map(([id, ic, n, c]) => { const o = d[id] || { count: 0, cover: '' }; return `<a class="catcard" href="#/?cat=${id}" style="--c:${c}">${o.cover ? `<img loading="lazy" src="${o.cover}" alt="">` : `<em>${ic}</em>`}<div class="cl"><b>${ic} ${n}</b><small>${o.count} 条</small></div></a>`; }).join('')}</div>`;
 }
 
 /* 成长数据：折线图用内联 SVG，不依赖任何外部库（离线也能看） */
@@ -554,7 +599,7 @@ async function route() {
     if (!S.me) { chrome(''); return viewLogin(S.needSetup); }
     if (seg[0] === 'login') { location.hash = '#/'; return; }
     const r = seg[0] || '';
-    const TR = ['treasure', 'growth', 'voice', 'capsule', 'qa'];
+    const TR = ['treasure', 'cats', 'growth', 'voice', 'capsule', 'qa'];
     chrome(TR.includes(r) ? 'treasure' : ['diary', 'new', 'me'].includes(r) ? (r === 'new' ? 'add' : r) : (r === '' ? '' : 'x'));
     if (r === '') return await viewTimeline('home', qs);
     if (r === 'diary') return await viewTimeline('diary', qs);
@@ -563,6 +608,7 @@ async function route() {
     if (r === 'edit') return await viewCompose(seg[1], qs);
     if (r === 'me') return await viewMe();
     if (r === 'treasure') return viewTreasure();
+    if (r === 'cats') return await viewCats();
     if (r === 'growth') return await viewGrowth(qs);
     if (r === 'voice') return await viewVoice(qs);
     if (r === 'capsule') return await viewCapsule();

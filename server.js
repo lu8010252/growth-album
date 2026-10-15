@@ -142,7 +142,7 @@ function whisperLabel(w, mine) {
 function toClient(p, u) {
   const base = {
     id: p.id, type: p.type, kidIds: p.kidIds, authorId: p.authorId, authorName: userName(p.authorId),
-    date: p.date, visibility: p.visibility, createdAt: p.createdAt, ai: !!p.ai,
+    date: p.date, visibility: p.visibility, createdAt: p.createdAt, ai: !!p.ai, category: catOfPost(p),
     canEdit: canEdit(u, p), canDelete: canDelete(u, p),
   };
   if (p.type === 'capsule') Object.assign(base, { unlockDate: p.unlockDate, unlockMode: p.unlockMode, unlockAge: p.unlockAge || null });
@@ -338,6 +338,9 @@ app.delete('/api/users/:id', needAdmin, (req, res) => {
 });
 
 /* 帖子 */
+// 成长记录的分类（日记、时间胶囊不分类）
+const CATS = ['daily', 'travel', 'award', 'exam', 'first', 'birthday', 'school', 'hobby', 'festival'];
+const catOfPost = (p) => (p.type === 'record' ? (CATS.includes(p.category) ? p.category : 'daily') : '');
 function postFields(b, u, old) {
   const type = old ? old.type : (b.type === 'diary' || b.type === 'capsule' ? b.type : 'record');
   const date = isDay(b.date) ? b.date : (old ? old.date : localDay());
@@ -345,8 +348,9 @@ function postFields(b, u, old) {
   const ids = Array.isArray(b.kidIds) ? b.kidIds : String(b.kidIds || '').split(',');
   const kidIds = has('kidIds') ? ids.filter((id) => kids.some((k) => k.id === id)) : (old ? old.kidIds : []);
   const visibility = type === 'record' ? 'family' : has('visibility') ? (b.visibility === 'family' ? 'family' : 'private') : (old ? old.visibility : 'private');
+  const category = type !== 'record' ? '' : has('category') ? (CATS.includes(b.category) ? b.category : 'daily') : (old && CATS.includes(old.category) ? old.category : 'daily');
   return {
-    type, date, kidIds, visibility,
+    type, date, kidIds, visibility, category,
     title: has('title') ? str(b.title, 100) : (old ? old.title : ''),
     body: has('body') ? String(b.body || '').trim().slice(0, 50000) : (old ? old.body : ''),
   };
@@ -367,10 +371,11 @@ function capsuleFields(b, f) {
   return r;
 }
 app.get('/api/posts', needLogin, (req, res) => {
-  const { kid, type, q } = req.query;
+  const { kid, type, q, cat } = req.query;
   const offset = Math.max(0, +req.query.offset || 0), limit = Math.min(50, +req.query.limit || 20);
   let list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p));   // 胶囊有自己的页面
   if (type) list = list.filter((p) => p.type === type);
+  if (cat && CATS.includes(cat)) list = list.filter((p) => catOfPost(p) === cat);
   if (kid === 'together') list = list.filter((p) => p.kidIds.length >= 2);   // 双宝日常：两个以上孩子同框
   else if (kid) list = list.filter((p) => p.kidIds.includes(kid));
   if (q) { const s = String(q).toLowerCase(); list = list.filter((p) => (p.title + ' ' + p.body).toLowerCase().includes(s)); }
@@ -383,6 +388,28 @@ const getPost = (req, res) => {
   return p;
 };
 app.get('/api/posts/:id', needLogin, (req, res) => { const p = getPost(req, res); if (p) res.json(toClient(p, req.user)); });
+
+// 分类相册：每个分类的条数和封面（最新一条带图的记录）
+app.get('/api/cats', needLogin, (req, res) => {
+  const out = {};
+  const list = [...posts.values()].filter((p) => p.type === 'record' && canView(req.user, p)).sort((a, b) => (a.date < b.date ? 1 : -1));
+  for (const p of list) {
+    const o = out[catOfPost(p)] || (out[catOfPost(p)] = { count: 0, cover: '' });
+    o.count++;
+    if (!o.cover) {
+      const m = p.media.find((x) => x.kind === 'image' || (x.kind === 'video' && x.poster));
+      if (m) { const mo = mediaOut(p.id, m); o.cover = m.kind === 'video' ? mo.poster : (mo.thumb || mo.url); }
+    }
+  }
+  res.json(out);
+});
+// 那年今天：往年同月同日的记录
+app.get('/api/onthisday', needLogin, (req, res) => {
+  const t = localDay(), md = t.slice(5), y = +t.slice(0, 4);
+  const list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p) && p.date.slice(5) === md && +p.date.slice(0, 4) < y)
+    .sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 6);
+  res.json(list.map((p) => toClient(p, req.user)));
+});
 
 app.post('/api/posts', needWrite, (req, res, next) => { req.pid = Date.now().toString(36) + rand(3); next(); }, wrapUpload(true), async (req, res) => {
   const cleanup = () => fsp.rm(postDir(req.pid), { recursive: true, force: true }).catch(() => {});
@@ -566,7 +593,7 @@ app.get('/api/export', needLogin, async (req, res) => {
     growth: growth.filter((g) => !kid || g.kidId === kid.id).sort((a, b) => (a.date < b.date ? -1 : 1)).map((g) => ({ kidId: g.kidId, date: g.date, height: g.height, weight: g.weight, shoe: g.shoe, note: g.note })),
     qa: qaRecs.filter((r) => !kid || r.kidId === kid.id).sort((a, b) => a.age - b.age).map((r) => ({ kidId: r.kidId, age: r.age, date: r.date, answers: r.answers })),
     posts: list.map((p) => ({
-      id: p.id, type: p.type, date: p.date, title: p.title, body: p.body, kidIds: p.kidIds, author: userName(p.authorId),
+      id: p.id, type: p.type, category: catOfPost(p), date: p.date, title: p.title, body: p.body, kidIds: p.kidIds, author: userName(p.authorId),
       unlockDate: p.type === 'capsule' ? p.unlockDate : undefined,
       comments: p.comments.filter((c) => canSeeComment(req.user, c)).map((c) => ({ name: c.nick || userName(c.userId), text: c.text, at: c.at, replyTo: c.replyToName || '', whisper: !!c.whisper })),
       media: p.media.map((m) => ({ kind: m.kind, name: m.name, file: `media/${p.id}/${m.file}`, poster: m.poster ? `media/${p.id}/${m.poster}` : null, web: m.web && m.status === 'ready' ? `media/${p.id}/${m.web}` : null })),
