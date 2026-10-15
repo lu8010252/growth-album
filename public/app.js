@@ -444,13 +444,28 @@ function niceTicks(lo, hi, n) {
   return t;
 }
 const Z = { p3: -1.8808, p15: -1.0364, p50: 0, p85: 1.0364, p97: 1.8808 };
-const whoVal = (t, m, z) => { const L = t.L[m], M = t.M[m], S = t.S[m]; return L ? M * Math.pow(1 + L * S * z, 1 / L) : M * Math.exp(S * z); };
-const whoAt = (t, mo, z) => { const n = t.M.length - 1, m = Math.min(Math.max(mo, 0), n), i = Math.floor(m), f = m - i; return i >= n ? whoVal(t, n, z) : whoVal(t, i, z) * (1 - f) + whoVal(t, i + 1, z) * f; };
 const normCdf = (z) => { const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989423 * Math.exp(-z * z / 2), p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274)))); return z > 0 ? 1 - p : p; };
-function whoPercentile(t, ageYears, y) { // 返回约第几百分位；超出表范围返回 null
-  const mo = ageYears * 12; if (mo < 0 || mo > t.M.length - 1) return null;
-  const n = t.M.length - 1, i = Math.min(Math.floor(mo), n - 1), f = mo - i, g = (a) => a[i] * (1 - f) + a[i + 1] * f, L = g(t.L), M = g(t.M), S = g(t.S);
-  const z = L ? (Math.pow(y / M, L) - 1) / (L * S) : Math.log(y / M) / S; return Math.round(normCdf(z) * 100);
+// 参考曲线：返回 { id, name, max(岁), at(年龄岁, 'p3'|'p15'|'p50'|'p85'|'p97'), pct(年龄岁, 数值), note }
+function makeRef(src, metric) {
+  if (src === 'who' && window.WHO_GIRLS && window.WHO_GIRLS[metric]) {
+    const t = window.WHO_GIRLS[metric], n = t.M.length - 1;
+    const val = (m, z) => { const L = t.L[m], M = t.M[m], S = t.S[m]; return L ? M * Math.pow(1 + L * S * z, 1 / L) : M * Math.exp(S * z); };
+    const at = (a, k) => { const m = Math.min(Math.max(a * 12, 0), n), i = Math.floor(m), f = m - i; return i >= n ? val(n, Z[k]) : val(i, Z[k]) * (1 - f) + val(i + 1, Z[k]) * f; };
+    return { id: 'who', name: 'WHO 女孩参考', max: n / 12, at, pct(a, y) {
+      const mo = a * 12; if (mo < 0 || mo > n) return null;
+      const i = Math.min(Math.floor(mo), n - 1), f = mo - i, g = (x) => x[i] * (1 - f) + x[i + 1] * f, L = g(t.L), M = g(t.M), S = g(t.S);
+      return Math.round(normCdf(L ? (Math.pow(y / M, L) - 1) / (L * S) : Math.log(y / M) / S) * 100); },
+      note: '灰色带是 WHO 女孩参考范围：深带 P3–P97（大多数孩子落在其中），浅带 P15–P85，虚线为中位数 P50。' + (metric === 'weight' ? 'WHO 体重参考只到 10 岁。' : '') };
+  }
+  if (src === 'cn' && window.CN_GIRLS && window.CN_GIRLS[metric]) {
+    const t = window.CN_GIRLS[metric], n = t.m.length - 1, COL = { p3: 1, p15: 2, p50: 3, p85: 4, p97: 5 };
+    const row = (a) => { const mo = Math.min(Math.max(a * 12, 0), t.m[n]); let i = 0; while (i < n - 1 && t.m[i + 1] <= mo) i++; const f = (mo - t.m[i]) / (t.m[i + 1] - t.m[i]); return t.v[i].map((x, j) => x * (1 - f) + t.v[i + 1][j] * f); };
+    return { id: 'cn', name: '中国国标', max: t.m[n] / 12, at: (a, k) => row(a)[COL[k]], pct(a, y) {
+      if (a * 12 > t.m[n] + 0.5) return null; const r = row(a); if (y <= r[0]) return Math.round(normCdf(-3) * 100); if (y >= r[6]) return Math.round(normCdf(3) * 100);
+      let i = 0; while (i < 5 && y >= r[i + 1]) i++; return Math.round(normCdf(i - 3 + (y - r[i]) / (r[i + 1] - r[i])) * 100); },
+      note: '灰色带是国家卫健委《7岁以下儿童生长标准》（WS/T 423—2022）女孩标准：深带 −2SD～+2SD（约 P2～P98），浅带 ±1SD（约 P16～P84），虚线为中位数。这个标准只覆盖 7 岁以下，超过的孩子没有参考带。' };
+  }
+  return null;
 }
 function growthChart(series, unit, ref) {
   const W = 640, H = 300, L = 46, R = 16, T = 14, B = 36, useAge = series.every((s) => s.k.birthday), DAY = 864e5;
@@ -458,9 +473,9 @@ function growthChart(series, unit, ref) {
   const xs = series.flatMap((s) => s.pts.map((p) => xv(s, p.date))), ys = series.flatMap((s) => s.pts.map((p) => p.y));
   let x0 = Math.min(...xs), x1 = Math.max(...xs);
   if (x1 - x0 < (useAge ? 0.2 : 30 * DAY)) { const pad = useAge ? 0.5 : 30 * DAY; x0 -= pad; x1 += pad; }
-  if (ref && useAge) { x0 = Math.max(0, x0 - 0.3); x1 = Math.min(ref.M.length / 12 - 1 / 12, x1 + 0.3); }
-  const band = ref && useAge ? Array.from({ length: 41 }, (_, i) => x0 + ((x1 - x0) * i) / 40) : null;
-  if (band) band.forEach((a) => { ys.push(whoAt(ref, a * 12, Z.p3), whoAt(ref, a * 12, Z.p97)); });
+  if (ref && useAge) { x0 = Math.max(0, x0 - 0.3); x1 += 0.3; }
+  const bx1 = ref && useAge ? Math.min(x1, ref.max) : 0, band = ref && useAge && bx1 > x0 ? Array.from({ length: 41 }, (_, i) => x0 + ((bx1 - x0) * i) / 40) : null; // 参考带只画到参考表覆盖的年龄
+  if (band) band.forEach((a) => { ys.push(ref.at(a, 'p3'), ref.at(a, 'p97')); });
   const yt = niceTicks(Math.min(...ys), Math.max(...ys), 5), y0 = yt[0], y1 = yt[yt.length - 1];
   const X = (v) => L + ((v - x0) / (x1 - x0)) * (W - L - R), Y = (v) => T + (1 - (v - y0) / (y1 - y0 || 1)) * (H - T - B);
   let xt = [];
@@ -468,8 +483,8 @@ function growthChart(series, unit, ref) {
   else for (let i = 0; i < 5; i++) { const t = x0 + ((x1 - x0) * i) / 4, d = new Date(t); xt.push([t, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`]); }
   const grid = yt.map((v) => `<line class="gl" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join('') +
     xt.map(([v, l]) => `<text class="ax" x="${X(v)}" y="${H - 12}" text-anchor="middle">${l}</text>`).join('');
-  const pl = (z) => band.map((a) => X(a).toFixed(1) + ',' + Y(whoAt(ref, a * 12, z)).toFixed(1));
-  const ribbon = band ? `<polygon class="wb" points="${[...pl(Z.p3), ...pl(Z.p97).reverse()].join(' ')}"/><polygon class="wb in" points="${[...pl(Z.p15), ...pl(Z.p85).reverse()].join(' ')}"/><polyline class="wm" fill="none" points="${pl(Z.p50).join(' ')}"/>` : '';
+  const pl = (k) => band.map((a) => X(a).toFixed(1) + ',' + Y(ref.at(a, k)).toFixed(1));
+  const ribbon = band ? `<polygon class="wb" points="${[...pl('p3'), ...pl('p97').reverse()].join(' ')}"/><polygon class="wb in" points="${[...pl('p15'), ...pl('p85').reverse()].join(' ')}"/><polyline class="wm" fill="none" points="${pl('p50').join(' ')}"/>` : '';
   const lines = series.map((s) => {
     const pts = s.pts.map((p) => [X(xv(s, p.date)), Y(p.y), p]).sort((a, b) => a[0] - b[0]);
     return `<polyline fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linejoin="round" points="${pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ')}"/>` +
@@ -485,14 +500,17 @@ async function viewGrowth(qs) {
   const series = sel.map((k) => ({ k, color: k.color, pts: all.filter((g) => g.kidId === k.id && g[metric] != null).map((g) => ({ date: g.date, y: g[metric] })) })).filter((s) => s.pts.length);
   const rows = all.filter((g) => sel.some((k) => k.id === g.kidId)).reverse();
   const [mn, unit] = GMETRIC[metric];
-  const whoOn = qs.get('who') !== '0' && !!window.WHO_GIRLS && !!window.WHO_GIRLS[metric] && series.length > 0 && series.every((s) => s.k.birthday);
-  const ref = whoOn ? window.WHO_GIRLS[metric] : null;
-  const pctNote = ref ? series.map((s) => { const last = s.pts.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).pop(), pc = whoPercentile(ref, (new Date(last.date + 'T00:00:00') - new Date(s.k.birthday + 'T00:00:00')) / (365.25 * 864e5), last.y); return pc == null ? '' : `${esc(s.k.name)}最近一次约第 ${Math.min(Math.max(pc, 1), 99)} 百分位`; }).filter(Boolean).join('；') : '';
-  const whoLink = (on) => link(kid, metric) + (on ? '' : '&who=0');
+  const allBirth = series.length > 0 && series.every((s) => s.k.birthday), refSrc = qs.get('ref') || 'who';
+  const ref = allBirth ? makeRef(refSrc, metric) : null, ageOf = (k, d) => (new Date(d + 'T00:00:00') - new Date(k.birthday + 'T00:00:00')) / (365.25 * 864e5);
+  const inRange = !!ref && series.some((s) => s.pts.some((p) => ageOf(s.k, p.date) <= ref.max + 0.05));
+  const pctNote = ref ? series.map((s) => { const last = s.pts.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).pop(), pc = ref.pct(ageOf(s.k, last.date), last.y); return pc == null ? '' : `${esc(s.k.name)}最近一次约第 ${Math.min(Math.max(pc, 1), 99)} 百分位`; }).filter(Boolean).join('；') : '';
+  const refLink = (r) => link(kid, metric) + '&ref=' + r;
+  const refChips = allBirth && window.WHO_GIRLS && window.WHO_GIRLS[metric] ? `<div class="chips"><span class="note" style="align-self:center;white-space:nowrap">对照</span>${[['who', 'WHO 女孩'], ['cn', '中国国标（7岁以下）'], ['0', '不对照']].map(([r, n]) => `<a class="chip ${refSrc === r || (!['who', 'cn'].includes(refSrc) && r === '0') ? 'on' : ''}" href="${refLink(r)}">${n}</a>`).join('')}</div>` : '';
   $('#view').innerHTML = `<div class="row sp" style="margin:6px 4px 8px"><h2 style="margin:0">📈 成长数据</h2>${canWrite() ? '<button class="btn sm" id="ga">＋ 记一次</button>' : ''}</div>
   <div class="chips">${kidChipsHtml('#/growth', kid, false, 'm=' + metric)}</div>
-  <div class="chips">${Object.entries(GMETRIC).map(([m, [n]]) => `<a class="chip ${m === metric ? 'on' : ''}" href="${link(kid, m)}">${n}</a>`).join('')}${window.WHO_GIRLS && window.WHO_GIRLS[metric] ? `<a class="chip ${whoOn ? 'on' : ''}" href="${whoLink(!whoOn)}">WHO 女孩参考</a>` : ''}</div>
-  <div class="panel">${series.length ? `${growthChart(series, unit, ref)}<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.k.name)}</span>`).join('')}<span class="note">${mn}（${unit}）· 横轴${series.every((s) => s.k.birthday) ? '是年龄' : '是日期'}</span></div>${ref ? `<p class="note" style="margin:8px 0 0">灰色带是 WHO 女孩参考范围：深带 P3–P97（大多数孩子落在其中），浅带 P15–P85，虚线为中位数 P50。${pctNote ? pctNote + '。' : ''}曲线走势比单个点的高低更重要，只要沿着自己的百分位带稳定增长就是正常的；有疑虑请咨询儿科医生。${metric === 'weight' ? '体重参考只到 10 岁。' : ''}</p>` : (window.WHO_GIRLS && window.WHO_GIRLS[metric] && series.length && !series.every((s) => s.k.birthday) ? '<p class="note" style="margin:8px 0 0">给孩子填了生日后才能对照 WHO 曲线。</p>' : '')}` : `<div class="empty" style="padding:30px 10px">还没有${mn}的记录${canWrite() ? '<br>点右上角「＋ 记一次」' : ''}</div>`}</div>
+  <div class="chips">${Object.entries(GMETRIC).map(([m, [n]]) => `<a class="chip ${m === metric ? 'on' : ''}" href="${link(kid, m)}">${n}</a>`).join('')}</div>
+  ${refChips}
+  <div class="panel">${series.length ? `${growthChart(series, unit, ref)}<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.k.name)}</span>`).join('')}<span class="note">${mn}（${unit}）· 横轴${allBirth ? '是年龄' : '是日期'}</span></div>${ref ? (inRange ? `<p class="note" style="margin:8px 0 0">${ref.note}${pctNote ? pctNote + '。' : ''}曲线走势比单个点的高低更重要，只要沿着自己的百分位带稳定增长就是正常的；有疑虑请咨询儿科医生。</p>` : `<p class="note" style="margin:8px 0 0">选中的孩子已超出「${ref.name}」的年龄范围，没有参考带。</p>`) : (series.length && !allBirth ? '<p class="note" style="margin:8px 0 0">给孩子填了生日后才能对照参考曲线。</p>' : '')}` : `<div class="empty" style="padding:30px 10px">还没有${mn}的记录${canWrite() ? '<br>点右上角「＋ 记一次」' : ''}</div>`}</div>
   <div class="panel"><h3>记录表</h3>${rows.length ? `<div class="tw"><table class="gt"><thead><tr><th>日期</th>${sel.length > 1 ? '<th>谁</th>' : ''}<th>年龄</th><th>身高 cm</th><th>体重 kg</th><th>鞋码</th><th>备注</th><th></th></tr></thead><tbody>${rows.map((g) => { const k = kidOf(g.kidId) || {}; return `<tr><td>${g.date}</td>${sel.length > 1 ? `<td>${esc(k.emoji || '')} ${esc(k.name || '')}</td>` : ''}<td>${k.birthday ? ageText(k.birthday, g.date) : ''}</td><td>${g.height ?? ''}</td><td>${g.weight ?? ''}</td><td>${g.shoe ?? ''}</td><td>${esc(g.note)}</td><td>${g.canEdit ? `<a data-e="${g.id}" class="lnk">改</a> <a data-d="${g.id}" class="lnk">删</a>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="note">暂无记录</p>'}</div>`;
   const fields = (g = {}) => [
     { name: 'kidId', label: '谁', type: 'select', options: S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`]), value: g.kidId || kid || S.kids[0].id },
