@@ -405,12 +405,21 @@ app.get('/api/cats', needLogin, (req, res) => {
   }
   res.json(out);
 });
-// 那年今天：往年同月同日的记录
+// 那年今日：往年同一天及前后 3 天的记录（按「几年前」分组，同一年里越接近今天越靠前）
 app.get('/api/onthisday', needLogin, (req, res) => {
-  const t = localDay(), md = t.slice(5), y = +t.slice(0, 4);
-  const list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p) && p.date.slice(5) === md && +p.date.slice(0, 4) < y)
-    .sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 6);
-  res.json(list.map((p) => toClient(p, req.user)));
+  const t = localDay(), y = +t.slice(0, 4), DAY = 864e5, T = Date.UTC(y, +t.slice(5, 7) - 1, +t.slice(8, 10)), found = [];
+  for (const p of posts.values()) {
+    if (p.type === 'capsule' || !canView(req.user, p)) continue;
+    const m = +p.date.slice(5, 7) - 1, d = +p.date.slice(8, 10);
+    let best = null;
+    for (const yy of [y - 1, y, y + 1]) {          // 周年日可能落在今年、去年或明年（跨年的前后几天）
+      const off = Math.round((Date.UTC(yy, m, d) - T) / DAY), ago = yy - +p.date.slice(0, 4);
+      if (ago >= 1 && Math.abs(off) <= 3 && (!best || Math.abs(off) < Math.abs(best.off))) best = { off, ago };
+    }
+    if (best) found.push({ p, ...best });
+  }
+  found.sort((a, b) => a.ago - b.ago || Math.abs(a.off) - Math.abs(b.off) || (a.p.date < b.p.date ? 1 : -1));
+  res.json(found.slice(0, 12).map(({ p, off, ago }) => ({ ...toClient(p, req.user), ago, off })));
 });
 
 app.post('/api/posts', needWrite, (req, res, next) => { req.pid = Date.now().toString(36) + rand(3); next(); }, wrapUpload(true), async (req, res) => {

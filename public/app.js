@@ -212,29 +212,33 @@ function catChipsHtml(kid, cat) {
 async function loadOnThisDay() {
   const box = $('#otd'); if (!box) return;
   let list = []; try { list = await api('/api/onthisday'); } catch { return; }
-  if (!$('#otd')) return;
-  if (!list.length) { box.innerHTML = '<div class="otd"><h3>📅 那年今天</h3><p class="note" style="margin:0 4px">往年的今天还没有记录，以后每年这一天，这里会翻出当年的照片。</p></div>'; return; }
-  const y = +today().slice(0, 4);
-  box.innerHTML = `<div class="otd"><h3>📅 那年今天</h3><div class="strip">${list.map((p) => {
-    const m = p.media.find((x) => x.kind === 'image' || (x.kind === 'video' && x.poster)), src = m ? (m.kind === 'video' ? m.poster : (m.thumb || m.url)) : '';
-    const txt = p.title || (p.body || '').slice(0, 24) || '一段回忆';
-    return `<a class="mem ${src ? '' : 'nopic'}" href="#/post/${p.id}">${src ? `<img loading="lazy" src="${src}" alt="">` : ''}<span class="yr">${y - +p.date.slice(0, 4)} 年前</span><b>${esc(txt)}</b></a>`;
-  }).join('')}</div></div>`;
+  if (!list.length || !$('#otd')) return;
+  const by = new Map(); list.forEach((p) => { if (!by.has(p.ago)) by.set(p.ago, []); by.get(p.ago).push(p); });
+  const offTxt = (o) => (o === 0 ? '当天' : o < 0 ? `前${-o}天` : `后${o}天`);
+  box.innerHTML = [...by].map(([ago, ps], gi) => {
+    const dates = [...new Set(ps.map((p) => p.date))].sort(), exact = ps.some((p) => p.off === 0);
+    const head = `${ago} 年前的今天${exact ? '' : '前后'}（${dates.length === 1 ? dates[0] : dates[0] + ' ~ ' + dates[dates.length - 1]}）`;
+    return `<div class="otd"><h3>${gi === 0 ? '📅 那年今日 <span class="sep">|</span> ' : ''}${head}</h3><div class="strip">${ps.map((p) => {
+      const m = p.media.find((x) => x.kind === 'image' || (x.kind === 'video' && x.poster)), src = m ? (m.kind === 'video' ? m.poster : (m.thumb || m.url)) : '';
+      const txt = p.title || (p.body || '').slice(0, 24) || '一段回忆';
+      return `<a class="mem ${src ? '' : 'nopic'}" href="#/post/${p.id}">${src ? `<img loading="lazy" src="${src}" alt="">` : ''}<span class="yr">${offTxt(p.off)}</span><b>${esc(txt)}</b></a>`;
+    }).join('')}</div></div>`;
+  }).join('');
 }
 async function viewTimeline(mode, qs) {
   const filter = { kid: qs.get('kid') || '', q: qs.get('q') || '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '' };
   const type = mode === 'diary' ? 'diary' : '';
   const plain = mode === 'home' && !filter.kid && !filter.cat;
   const chips = mode === 'diary' ? '' : `<div class="chips">${kidChipsHtml('#/', filter.kid, true, filter.cat ? 'cat=' + filter.cat : '')}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div><div class="chips cats">${catChipsHtml(filter.kid, filter.cat)}</div>`;
-  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : plain ? heroHtml() + '<div id="otd"></div>' : ''}${chips}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
-  if (plain) loadOnThisDay();
+  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml() + '<div id="otd"></div>' : ''}${chips}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  if (mode === 'home') loadOnThisDay();
   if ($('#rv')) $('#rv').onclick = () => openReview(filter.kid);
   let offset = 0, last = '', total = 0;
   const tl = $('#tl');
   async function load() {
     const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}`;
     const d = await api(u); total = d.total;
-    if (plain && $('#tot') && total) $('#tot').textContent = `已经记下 ${total} 个瞬间`;
+    if (mode === 'home' && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `筛选出 ${total} 个瞬间`;
     let h = '';
     for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span>${m}</span></div>`; } h += cardHtml(p, true); }
     tl.insertAdjacentHTML('beforeend', h); offset += d.items.length;
