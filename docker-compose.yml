@@ -1,6 +1,6 @@
 services:
   growth-album:
-    build: .
+    image: ghcr.io/lu8010252/growth-album:latest
     container_name: growth-album
     restart: unless-stopped
     ports:

@@ -6,10 +6,20 @@
 
 ## 部署
 
-```bash
-git clone <本仓库> growth-album && cd growth-album
-docker compose up -d --build
+不用下载源码，建一个文件夹，放入下面的 `docker-compose.yml`，再 `docker compose up -d` 即可（镜像由 GitHub Actions 自动构建，在仓库 Packages 里可见）：
+
+```yaml
+services:
+  growth-album:
+    image: ghcr.io/lu8010252/growth-album:latest
+    container_name: growth-album
+    restart: unless-stopped
+    ports: ["8010:8010"]
+    environment: [MAX_UPLOAD_MB=2048, TZ=Asia/Shanghai]
+    volumes: ["./data:/app/data"]
 ```
+
+更新：`docker compose pull && docker compose up -d`。也可以 `git clone` 本仓库后 `docker compose up -d --build` 自己构建。
 
 访问 `http://服务器IP:8010`，第一次打开会让你创建管理员账号。
 
