@@ -212,7 +212,8 @@ function catChipsHtml(kid, cat) {
 async function loadOnThisDay() {
   const box = $('#otd'); if (!box) return;
   let list = []; try { list = await api('/api/onthisday'); } catch { return; }
-  if (!list.length || !$('#otd')) return;
+  if (!$('#otd')) return;
+  if (!list.length) { box.innerHTML = '<div class="otd"><h3>📅 那年今天</h3><p class="note" style="margin:0 4px">往年的今天还没有记录，以后每年这一天，这里会翻出当年的照片。</p></div>'; return; }
   const y = +today().slice(0, 4);
   box.innerHTML = `<div class="otd"><h3>📅 那年今天</h3><div class="strip">${list.map((p) => {
     const m = p.media.find((x) => x.kind === 'image' || (x.kind === 'video' && x.poster)), src = m ? (m.kind === 'video' ? m.poster : (m.thumb || m.url)) : '';
@@ -463,7 +464,7 @@ function makeRef(src, metric) {
     return { id: 'cn', name: '中国国标', max: t.m[n] / 12, at: (a, k) => row(a)[COL[k]], pct(a, y) {
       if (a * 12 > t.m[n] + 0.5) return null; const r = row(a); if (y <= r[0]) return Math.round(normCdf(-3) * 100); if (y >= r[6]) return Math.round(normCdf(3) * 100);
       let i = 0; while (i < 5 && y >= r[i + 1]) i++; return Math.round(normCdf(i - 3 + (y - r[i]) / (r[i + 1] - r[i])) * 100); },
-      note: '灰色带是国家卫健委《7岁以下儿童生长标准》（WS/T 423—2022）女孩标准：深带 −2SD～+2SD（约 P2～P98），浅带 ±1SD（约 P16～P84），虚线为中位数。这个标准只覆盖 7 岁以下，超过的孩子没有参考带。' };
+      note: '灰色带是国家卫健委女孩标准：深带 −2SD～+2SD（约 P2～P98），浅带 ±1SD（约 P16～P84），虚线为中位数。' + (metric === 'height' ? '7 岁以下用 WS/T 423—2022，7～18 岁用 WS/T 612—2018（两个标准在 7 岁处会有一点小落差）。' : '体重标准只覆盖 7 岁以下，超过的孩子没有参考带。') };
   }
   return null;
 }
@@ -505,7 +506,7 @@ async function viewGrowth(qs) {
   const inRange = !!ref && series.some((s) => s.pts.some((p) => ageOf(s.k, p.date) <= ref.max + 0.05));
   const pctNote = ref ? series.map((s) => { const last = s.pts.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).pop(), pc = ref.pct(ageOf(s.k, last.date), last.y); return pc == null ? '' : `${esc(s.k.name)}最近一次约第 ${Math.min(Math.max(pc, 1), 99)} 百分位`; }).filter(Boolean).join('；') : '';
   const refLink = (r) => link(kid, metric) + '&ref=' + r;
-  const refChips = allBirth && window.WHO_GIRLS && window.WHO_GIRLS[metric] ? `<div class="chips"><span class="note" style="align-self:center;white-space:nowrap">对照</span>${[['who', 'WHO 女孩'], ['cn', '中国国标（7岁以下）'], ['0', '不对照']].map(([r, n]) => `<a class="chip ${refSrc === r || (!['who', 'cn'].includes(refSrc) && r === '0') ? 'on' : ''}" href="${refLink(r)}">${n}</a>`).join('')}</div>` : '';
+  const refChips = allBirth && window.WHO_GIRLS && window.WHO_GIRLS[metric] ? `<div class="chips"><span class="note" style="align-self:center;white-space:nowrap">对照</span>${[['who', 'WHO 女孩'], ['cn', '中国国标'], ['0', '不对照']].map(([r, n]) => `<a class="chip ${refSrc === r || (!['who', 'cn'].includes(refSrc) && r === '0') ? 'on' : ''}" href="${refLink(r)}">${n}</a>`).join('')}</div>` : '';
   $('#view').innerHTML = `<div class="row sp" style="margin:6px 4px 8px"><h2 style="margin:0">📈 成长数据</h2>${canWrite() ? '<button class="btn sm" id="ga">＋ 记一次</button>' : ''}</div>
   <div class="chips">${kidChipsHtml('#/growth', kid, false, 'm=' + metric)}</div>
   <div class="chips">${Object.entries(GMETRIC).map(([m, [n]]) => `<a class="chip ${m === metric ? 'on' : ''}" href="${link(kid, m)}">${n}</a>`).join('')}</div>
@@ -581,6 +582,7 @@ async function viewMe() {
   <div class="panel"><h3>${esc(S.me.name)}</h3><p class="note">${ROLE_NAME[S.me.role]} · 用户名 ${esc(S.me.username)}</p>
     <div class="row"><button class="btn ghost sm" id="rn">改名字</button><button class="btn ghost sm" id="pw">改密码</button><button class="btn ghost sm" id="lo">退出登录</button></div></div>
   <div class="panel"><h3>📦 导出</h3><p class="note">打包成 zip：里面有原图原视频、每条记录的文字，用浏览器打开 index.html 就能离线翻看。长大后转给她们就用这个。</p><div class="row">${exportBtns}</div></div>
+  <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频，生日聚会时拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvst" class="note" style="margin-top:8px"></div></div>
   ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
@@ -593,6 +595,23 @@ async function viewMe() {
   <div class="panel"><h3>⚙️ 站点</h3><div class="row sp"><span>名称：${esc(S.title)}</span><button class="btn ghost sm" id="st">修改</button></div>
     <p class="note" style="margin-top:10px">已存 ${stats.posts} 条记录 · ${stats.images} 张照片 · ${stats.videos} 个视频 · 占用 ${sizeText(stats.bytes)}${stats.pending ? ' · ⏳ 视频处理中 ' + stats.pending : ''}</p></div>` : ''}`;
   const refresh = () => boot().then(viewMe);
+  const pollMovie = (id) => {
+    S.movieId = id; clearInterval(pollMovie.t);
+    const show = (h) => { const el = $('#mvst'); if (el) el.innerHTML = h; return !!el; };
+    const tick = async () => {
+      let j; try { j = await api('/api/movie/' + id); } catch (e) { S.movieId = null; show(esc(e.message)); return clearInterval(pollMovie.t); }
+      if (!show(j.state === 'running' ? `⏳ 生成中 ${j.done} / ${j.total}……` : j.state === 'done' ? `✅ 做好了（${sizeText(j.size)}）<a class="btn sm" style="margin-left:8px" href="/api/movie/${id}/file" download>⬇ 下载 MP4</a>` : esc(j.error || '生成失败'))) return clearInterval(pollMovie.t);
+      if (j.state !== 'running') clearInterval(pollMovie.t);
+    };
+    tick(); pollMovie.t = setInterval(tick, 2000);
+  };
+  $('#mv').onclick = () => formDialog('生成回顾视频', [
+    { name: 'kid', label: '谁的', type: 'select', options: [['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], value: '' },
+    { name: 'since', label: '从（可留空）', type: 'date', value: '' },
+    { name: 'until', label: '到（可留空）', type: 'date', value: '' },
+    { name: 'secs', label: '每张停留', type: 'select', options: [['3', '3 秒'], ['4', '4 秒'], ['5', '5 秒'], ['6', '6 秒'], ['8', '8 秒']], value: '4' }],
+  async (v) => { const r = await api('/api/movie', { json: v }); toast(`开始生成，共 ${r.total} 张照片`); pollMovie(r.id); }, '开始生成', '最多取 120 张，超出会均匀抽样。');
+  if (S.movieId) pollMovie(S.movieId);
   $('#rn').onclick = () => formDialog('改名字', [{ name: 'name', label: '名字', value: S.me.name }], async (v) => { await api('/api/me', { method: 'PUT', json: v }); await refresh(); });
   $('#pw').onclick = () => formDialog('改密码', [{ name: 'old', label: '旧密码', type: 'password' }, { name: 'pw', label: '新密码（至少 6 位）', type: 'password' }], async (v) => { await api('/api/me/password', { json: v }); toast('密码已修改'); });
   if ($('#sw')) $('#sw').onclick = () => { location.href = 'https://localhost/index.html?reset=1'; };
