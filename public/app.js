@@ -158,7 +158,7 @@ function chrome(route) {
   if (!on) return;
   $('#who').textContent = S.me.name;
   const tabs = [['#/', ICON.home, '首页', ''], ['#/treasure', ICON.gift, '珍藏', 'treasure'], ['#/diary', ICON.book, '日记', 'diary']];
-  if (canWrite()) tabs.splice(1, 0, ['#/new', ICON.plus, '', 'add']);
+  if (canWrite()) tabs.splice(2, 0, ['#/new', ICON.plus, '', 'add']);
   tabs.push(['#/me', ICON.me, '我的', 'me']);
   $('#tabs').innerHTML = tabs.map(([h, ic, t, k]) => `<a href="${h}" class="${k === 'add' ? 'add' : ''} ${route === k || (k === '' && route === '') ? 'on' : ''}"><b>${ic}</b>${t}</a>`).join('');
 }
@@ -443,12 +443,24 @@ function niceTicks(lo, hi, n) {
   for (let v = Math.floor(lo / step) * step; v <= Math.ceil(hi / step) * step + 1e-9; v += step) t.push(+v.toFixed(6));
   return t;
 }
-function growthChart(series, unit) {
+const Z = { p3: -1.8808, p15: -1.0364, p50: 0, p85: 1.0364, p97: 1.8808 };
+const whoVal = (t, m, z) => { const L = t.L[m], M = t.M[m], S = t.S[m]; return L ? M * Math.pow(1 + L * S * z, 1 / L) : M * Math.exp(S * z); };
+const whoAt = (t, mo, z) => { const n = t.M.length - 1, m = Math.min(Math.max(mo, 0), n), i = Math.floor(m), f = m - i; return i >= n ? whoVal(t, n, z) : whoVal(t, i, z) * (1 - f) + whoVal(t, i + 1, z) * f; };
+const normCdf = (z) => { const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989423 * Math.exp(-z * z / 2), p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274)))); return z > 0 ? 1 - p : p; };
+function whoPercentile(t, ageYears, y) { // 返回约第几百分位；超出表范围返回 null
+  const mo = ageYears * 12; if (mo < 0 || mo > t.M.length - 1) return null;
+  const n = t.M.length - 1, i = Math.min(Math.floor(mo), n - 1), f = mo - i, g = (a) => a[i] * (1 - f) + a[i + 1] * f, L = g(t.L), M = g(t.M), S = g(t.S);
+  const z = L ? (Math.pow(y / M, L) - 1) / (L * S) : Math.log(y / M) / S; return Math.round(normCdf(z) * 100);
+}
+function growthChart(series, unit, ref) {
   const W = 640, H = 300, L = 46, R = 16, T = 14, B = 36, useAge = series.every((s) => s.k.birthday), DAY = 864e5;
   const xv = (s, d) => (useAge ? (new Date(d + 'T00:00:00') - new Date(s.k.birthday + 'T00:00:00')) / (365.25 * DAY) : new Date(d + 'T00:00:00').getTime());
   const xs = series.flatMap((s) => s.pts.map((p) => xv(s, p.date))), ys = series.flatMap((s) => s.pts.map((p) => p.y));
   let x0 = Math.min(...xs), x1 = Math.max(...xs);
   if (x1 - x0 < (useAge ? 0.2 : 30 * DAY)) { const pad = useAge ? 0.5 : 30 * DAY; x0 -= pad; x1 += pad; }
+  if (ref && useAge) { x0 = Math.max(0, x0 - 0.3); x1 = Math.min(ref.M.length / 12 - 1 / 12, x1 + 0.3); }
+  const band = ref && useAge ? Array.from({ length: 41 }, (_, i) => x0 + ((x1 - x0) * i) / 40) : null;
+  if (band) band.forEach((a) => { ys.push(whoAt(ref, a * 12, Z.p3), whoAt(ref, a * 12, Z.p97)); });
   const yt = niceTicks(Math.min(...ys), Math.max(...ys), 5), y0 = yt[0], y1 = yt[yt.length - 1];
   const X = (v) => L + ((v - x0) / (x1 - x0)) * (W - L - R), Y = (v) => T + (1 - (v - y0) / (y1 - y0 || 1)) * (H - T - B);
   let xt = [];
@@ -456,12 +468,14 @@ function growthChart(series, unit) {
   else for (let i = 0; i < 5; i++) { const t = x0 + ((x1 - x0) * i) / 4, d = new Date(t); xt.push([t, `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`]); }
   const grid = yt.map((v) => `<line class="gl" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${v}</text>`).join('') +
     xt.map(([v, l]) => `<text class="ax" x="${X(v)}" y="${H - 12}" text-anchor="middle">${l}</text>`).join('');
+  const pl = (z) => band.map((a) => X(a).toFixed(1) + ',' + Y(whoAt(ref, a * 12, z)).toFixed(1));
+  const ribbon = band ? `<polygon class="wb" points="${[...pl(Z.p3), ...pl(Z.p97).reverse()].join(' ')}"/><polygon class="wb in" points="${[...pl(Z.p15), ...pl(Z.p85).reverse()].join(' ')}"/><polyline class="wm" fill="none" points="${pl(Z.p50).join(' ')}"/>` : '';
   const lines = series.map((s) => {
     const pts = s.pts.map((p) => [X(xv(s, p.date)), Y(p.y), p]).sort((a, b) => a[0] - b[0]);
     return `<polyline fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linejoin="round" points="${pts.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ')}"/>` +
       pts.map(([x, y, p]) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${s.color}" stroke="var(--card)" stroke-width="1.5"><title>${esc(s.k.name)} ${p.date}${s.k.birthday ? '（' + ageText(s.k.birthday, p.date) + '）' : ''}：${p.y} ${unit}</title></circle>`).join('');
   }).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="成长曲线">${grid}${lines}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="成长曲线">${grid}${ribbon}${lines}</svg>`;
 }
 async function viewGrowth(qs) {
   const kid = qs.get('kid') || '', metric = GMETRIC[qs.get('m')] ? qs.get('m') : 'height';
@@ -471,10 +485,14 @@ async function viewGrowth(qs) {
   const series = sel.map((k) => ({ k, color: k.color, pts: all.filter((g) => g.kidId === k.id && g[metric] != null).map((g) => ({ date: g.date, y: g[metric] })) })).filter((s) => s.pts.length);
   const rows = all.filter((g) => sel.some((k) => k.id === g.kidId)).reverse();
   const [mn, unit] = GMETRIC[metric];
+  const whoOn = qs.get('who') !== '0' && !!window.WHO_GIRLS && !!window.WHO_GIRLS[metric] && series.length > 0 && series.every((s) => s.k.birthday);
+  const ref = whoOn ? window.WHO_GIRLS[metric] : null;
+  const pctNote = ref ? series.map((s) => { const last = s.pts.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).pop(), pc = whoPercentile(ref, (new Date(last.date + 'T00:00:00') - new Date(s.k.birthday + 'T00:00:00')) / (365.25 * 864e5), last.y); return pc == null ? '' : `${esc(s.k.name)}最近一次约第 ${Math.min(Math.max(pc, 1), 99)} 百分位`; }).filter(Boolean).join('；') : '';
+  const whoLink = (on) => link(kid, metric) + (on ? '' : '&who=0');
   $('#view').innerHTML = `<div class="row sp" style="margin:6px 4px 8px"><h2 style="margin:0">📈 成长数据</h2>${canWrite() ? '<button class="btn sm" id="ga">＋ 记一次</button>' : ''}</div>
   <div class="chips">${kidChipsHtml('#/growth', kid, false, 'm=' + metric)}</div>
-  <div class="chips">${Object.entries(GMETRIC).map(([m, [n]]) => `<a class="chip ${m === metric ? 'on' : ''}" href="${link(kid, m)}">${n}</a>`).join('')}</div>
-  <div class="panel">${series.length ? `${growthChart(series, unit)}<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.k.name)}</span>`).join('')}<span class="note">${mn}（${unit}）· 横轴${series.every((s) => s.k.birthday) ? '是年龄' : '是日期'}</span></div>` : `<div class="empty" style="padding:30px 10px">还没有${mn}的记录${canWrite() ? '<br>点右上角「＋ 记一次」' : ''}</div>`}</div>
+  <div class="chips">${Object.entries(GMETRIC).map(([m, [n]]) => `<a class="chip ${m === metric ? 'on' : ''}" href="${link(kid, m)}">${n}</a>`).join('')}${window.WHO_GIRLS && window.WHO_GIRLS[metric] ? `<a class="chip ${whoOn ? 'on' : ''}" href="${whoLink(!whoOn)}">WHO 女孩参考</a>` : ''}</div>
+  <div class="panel">${series.length ? `${growthChart(series, unit, ref)}<div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.k.name)}</span>`).join('')}<span class="note">${mn}（${unit}）· 横轴${series.every((s) => s.k.birthday) ? '是年龄' : '是日期'}</span></div>${ref ? `<p class="note" style="margin:8px 0 0">灰色带是 WHO 女孩参考范围：深带 P3–P97（大多数孩子落在其中），浅带 P15–P85，虚线为中位数 P50。${pctNote ? pctNote + '。' : ''}曲线走势比单个点的高低更重要，只要沿着自己的百分位带稳定增长就是正常的；有疑虑请咨询儿科医生。${metric === 'weight' ? '体重参考只到 10 岁。' : ''}</p>` : (window.WHO_GIRLS && window.WHO_GIRLS[metric] && series.length && !series.every((s) => s.k.birthday) ? '<p class="note" style="margin:8px 0 0">给孩子填了生日后才能对照 WHO 曲线。</p>' : '')}` : `<div class="empty" style="padding:30px 10px">还没有${mn}的记录${canWrite() ? '<br>点右上角「＋ 记一次」' : ''}</div>`}</div>
   <div class="panel"><h3>记录表</h3>${rows.length ? `<div class="tw"><table class="gt"><thead><tr><th>日期</th>${sel.length > 1 ? '<th>谁</th>' : ''}<th>年龄</th><th>身高 cm</th><th>体重 kg</th><th>鞋码</th><th>备注</th><th></th></tr></thead><tbody>${rows.map((g) => { const k = kidOf(g.kidId) || {}; return `<tr><td>${g.date}</td>${sel.length > 1 ? `<td>${esc(k.emoji || '')} ${esc(k.name || '')}</td>` : ''}<td>${k.birthday ? ageText(k.birthday, g.date) : ''}</td><td>${g.height ?? ''}</td><td>${g.weight ?? ''}</td><td>${g.shoe ?? ''}</td><td>${esc(g.note)}</td><td>${g.canEdit ? `<a data-e="${g.id}" class="lnk">改</a> <a data-d="${g.id}" class="lnk">删</a>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="note">暂无记录</p>'}</div>`;
   const fields = (g = {}) => [
     { name: 'kidId', label: '谁', type: 'select', options: S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`]), value: g.kidId || kid || S.kids[0].id },
