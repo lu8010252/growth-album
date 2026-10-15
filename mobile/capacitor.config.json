@@ -1,0 +1,7 @@
+{
+  "appId": "app.growthalbum",
+  "appName": "成长册",
+  "webDir": "www",
+  "server": { "allowNavigation": ["*"], "cleartext": true },
+  "android": { "appendUserAgent": "GrowthAlbumApp", "allowMixedContent": true }
+}

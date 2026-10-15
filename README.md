@@ -79,6 +79,16 @@ docker compose up -d --build
 - **隐私**：回顾只使用「成长记录」，**任何日记都不会发给 AI**；「帮我写」只发送你点击按钮时输入框里的文字。密钥保存在 `data/ai.json`（权限 600），不会出现在导出包里，但备份整个 data 目录时会一并带上，注意保管。
 - 如果 Hermes 跑在宿主机上，容器里用 `http://host.docker.internal:8642/v1`，并需让 Hermes 监听 `0.0.0.0`（默认只听 127.0.0.1，容器连不上）。
 
+## Android App（APK）
+
+仓库里的 `mobile/` 是一个很薄的 Android 外壳（Capacitor）：首次打开填你家成长册的地址，之后直接进入，录音、选照片都走手机系统的权限。
+
+1. 仓库 **Actions → Build Android APK → Run workflow**（改动 `mobile/` 也会自动触发），等几分钟。
+2. 到仓库 **Releases → 成长册 Android 安装包**，下载 `growth-album.apk` 安装（需允许「安装未知来源应用」）。
+3. 打开 App，填服务器地址。**录音要用 HTTPS 地址**；纯 `http://IP:端口` 也能用，但没有麦克风权限。换地址：「我的」页 →「切换服务器」。
+
+这是调试签名的安装包，自用足够；App 里的界面就是网站本身，所以网站更新后 App 不用重装。已知限制：App 内的「下载原图 / 导出 zip」不会触发下载，这类操作请用手机浏览器或电脑。
+
 ## 开发
 
 ```bash

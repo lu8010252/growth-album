@@ -1,0 +1,11 @@
+{
+  "name": "growth-album-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "成长册 Android 外壳：打开后连接到你自己的成长册服务器",
+  "dependencies": {
+    "@capacitor/android": "6.2.1",
+    "@capacitor/cli": "6.2.1",
+    "@capacitor/core": "6.2.1"
+  }
+}

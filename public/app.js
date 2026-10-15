@@ -3,6 +3,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const S = { me: null, kids: [], title: '成长册' };
 const ROLE_NAME = { admin: '管理员', member: '家人（可发布）', viewer: '家人（只读）', child: '孩子' };
+const IN_APP = /GrowthAlbumApp/.test(navigator.userAgent); // Android 外壳
 const canWrite = () => S.me && S.me.role !== 'viewer';
 
 /* ---------- 工具 ---------- */
@@ -499,6 +500,7 @@ async function viewMe() {
   <div class="panel"><h3>${esc(S.me.name)}</h3><p class="note">${ROLE_NAME[S.me.role]} · 用户名 ${esc(S.me.username)}</p>
     <div class="row"><button class="btn ghost sm" id="rn">改名字</button><button class="btn ghost sm" id="pw">改密码</button><button class="btn ghost sm" id="lo">退出登录</button></div></div>
   <div class="panel"><h3>📦 导出</h3><p class="note">打包成 zip：里面有原图原视频、每条记录的文字，用浏览器打开 index.html 就能离线翻看。长大后转给她们就用这个。</p><div class="row">${exportBtns}</div></div>
+  ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
     ${S.kids.map((k) => `<div class="item"><div>${esc(k.emoji)} <b>${esc(k.name)}</b><small>${k.birthday ? '生日 ' + k.birthday + ' · 现在 ' + ageText(k.birthday, today()) : '未填生日'}</small></div><div class="row"><button class="btn ghost sm" data-ek="${k.id}">编辑</button><button class="btn danger sm" data-dk="${k.id}">删除</button></div></div>`).join('') || '<p class="note">还没添加孩子</p>'}</div>
@@ -512,6 +514,7 @@ async function viewMe() {
   const refresh = () => boot().then(viewMe);
   $('#rn').onclick = () => formDialog('改名字', [{ name: 'name', label: '名字', value: S.me.name }], async (v) => { await api('/api/me', { method: 'PUT', json: v }); await refresh(); });
   $('#pw').onclick = () => formDialog('改密码', [{ name: 'old', label: '旧密码', type: 'password' }, { name: 'pw', label: '新密码（至少 6 位）', type: 'password' }], async (v) => { await api('/api/me/password', { json: v }); toast('密码已修改'); });
+  if ($('#sw')) $('#sw').onclick = () => { location.href = 'https://localhost/index.html?reset=1'; };
   $('#lo').onclick = async () => { await api('/api/logout', { method: 'POST' }); S.me = null; location.hash = '#/login'; route(); };
   if (!admin) return;
   const kf = (k = {}) => [{ name: 'name', label: '名字', value: k.name }, { name: 'birthday', label: '生日（用来显示几岁几个月）', type: 'date', value: k.birthday }, { name: 'emoji', label: '头像表情（一个 emoji）', value: k.emoji || '🌸' }];
