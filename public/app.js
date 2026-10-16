@@ -66,6 +66,30 @@ function kidTags(p) {
 }
 
 /* ---------- 弹窗表单 ---------- */
+/* 孩子的参考照片：给「识别是谁」对照用，每人最多 5 张 */
+function refsDialog(kidId) {
+  const d = document.createElement('dialog'); document.body.appendChild(d); d.showModal();
+  d.addEventListener('close', () => d.remove());
+  const reload = () => boot().then(viewMe);
+  const draw = () => {
+    const k = kidOf(kidId); if (!k) return d.close(); const refs = k.refs || [];
+    d.innerHTML = `<div class="dlg"><h3>📷 ${esc(k.name)} 的参考照片</h3><p class="note">传 2~5 张清楚的正脸照（最好是不同年龄、没戴帽子口罩的）。点「识别是谁」时，AI 会拿这些小图对照着认；只有这里的小图和你选的照片会发给 AI。</p>
+      <div class="previews">${refs.map((id) => `<div class="pv"><img src="/api/kids/${k.id}/refs/${id}" alt=""><button type="button" data-r="${id}">✕</button></div>`).join('')}</div>
+      <input type="file" id="rf" accept="image/*" multiple hidden><p class="err" hidden></p>
+      <div class="row sp"><button type="button" class="btn ghost" data-x>关闭</button><button type="button" class="btn" id="radd" ${refs.length >= 5 ? 'disabled' : ''}>＋ 添加照片（${refs.length}/5）</button></div></div>`;
+    const err = $('.err', d), fail = (m) => { err.textContent = m; err.hidden = false; };
+    $('[data-x]', d).onclick = () => d.close();
+    $('#radd', d).onclick = () => $('#rf', d).click();
+    $('#rf', d).onchange = async (e) => {
+      const fs = [...e.target.files].slice(0, 5 - refs.length); if (!fs.length) return;
+      $('#radd', d).disabled = true; $('#radd', d).textContent = '上传中…';
+      try { const fd = new FormData(); fs.forEach((f) => fd.append('files', f)); const r = await xhrSend(`/api/kids/${k.id}/refs`, 'POST', fd, () => {}); await reload(); draw(); if (r.bad) fail(`有 ${r.bad} 张格式不支持，没传上`); }
+      catch (x) { draw(); fail(x.message); }
+    };
+    d.querySelectorAll('[data-r]').forEach((b) => (b.onclick = async () => { try { await api(`/api/kids/${k.id}/refs/${b.dataset.r}`, { method: 'DELETE' }); await reload(); draw(); } catch (x) { fail(x.message); } }));
+  };
+  draw();
+}
 function formDialog(title, fields, onOk, okText = '保存', note = '') {
   const d = document.createElement('dialog');
   const fh = fields.map((f) => {
@@ -323,6 +347,72 @@ function xhrSend(url, method, fd, onProg) {
 }
 const AUD_RE = /\.(mp3|m4a|aac|wav|ogg|oga|opus|amr|flac|weba|wma)$/i;
 const isAudioFile = (f) => (f.type || '').startsWith('audio/') || AUD_RE.test(f.name);
+/* ---------- 从文件里读出「这件事发生的那天」：照片拍摄时间 > 视频/m4a 录制时间 > 文件名里的日期 > 文件修改时间 ---------- */
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const okDay = (d) => d instanceof Date && !isNaN(d) && d.getFullYear() >= 1990 && d.getTime() < Date.now() + 864e5;
+const IMG_RE = /\.(jpe?g|heic|heif|png|webp|avif|tiff?)$/i, MP4_RE = /\.(mp4|m4v|mov|3gp|m4a)$/i;
+function tiffDate(dv, t, le) { // 从 TIFF/EXIF 里取 DateTimeOriginal → DateTimeDigitized → DateTime
+  try {
+    const u16 = (o) => dv.getUint16(o, le), u32 = (o) => dv.getUint32(o, le);
+    const ifd = (off) => { const out = {}, p = t + off, n = u16(p); for (let k = 0; k < n && k < 200; k++) { const e = p + 2 + k * 12; out[u16(e)] = e; } return out; };
+    const str = (e) => { const n = u32(e + 4), o = n > 4 ? t + u32(e + 8) : e + 8; let r = ''; for (let k = 0; k < n && k < 32 && dv.getUint8(o + k); k++) r += String.fromCharCode(dv.getUint8(o + k)); return r; };
+    const main = ifd(u32(t + 4)), ex = main[0x8769] ? ifd(u32(main[0x8769] + 8)) : {};
+    const s = (ex[0x9003] && str(ex[0x9003])) || (ex[0x9004] && str(ex[0x9004])) || (main[0x132] && str(main[0x132])) || '';
+    const m = /^(\d{4}):(\d{2}):(\d{2})/.exec(s); if (!m || +m[2] < 1 || +m[2] > 12) return null;
+    const d = new Date(+m[1], +m[2] - 1, +m[3]); return okDay(d) ? d : null;
+  } catch { return null; }
+}
+async function exifDay(f) { // JPEG 的 APP1 和 HEIC 里的 Exif 都以 "Exif\0\0" + TIFF 头开头，直接在文件开头扫
+  const u = new Uint8Array(await f.slice(0, 524288).arrayBuffer()), dv = new DataView(u.buffer);
+  for (let i = 0; i + 14 < u.length; i++) {
+    if (u[i] !== 0x45 || u[i + 1] !== 0x78 || u[i + 2] !== 0x69 || u[i + 3] !== 0x66 || u[i + 4] || u[i + 5]) continue;
+    const t = i + 6; if (!((u[t] === 0x49 && u[t + 1] === 0x49) || (u[t] === 0x4d && u[t + 1] === 0x4d))) continue;
+    const d = tiffDate(dv, t, u[t] === 0x49); if (d) return d;
+  }
+  return null;
+}
+async function mp4Day(f) { // 顺着顶层 box 找 moov，取第一个子 box mvhd 里的创建时间（1904 年起的秒数，UTC）
+  const fourcc = (v, o) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
+  let pos = 0;
+  for (let n = 0; n < 40 && pos + 16 <= f.size; n++) {
+    const dv = new DataView(await f.slice(pos, pos + 16).arrayBuffer());
+    let size = dv.getUint32(0), hdr = 8; const type = fourcc(dv, 4);
+    if (size === 1) { size = Number(dv.getBigUint64(8)); hdr = 16; } else if (size === 0) size = f.size - pos;
+    if (size < hdr) return null;
+    if (type === 'moov') {
+      const b = new DataView(await f.slice(pos + hdr, pos + hdr + 40).arrayBuffer());
+      if (b.byteLength < 20 || fourcc(b, 4) !== 'mvhd') return null;
+      const secs = b.getUint8(8) === 1 ? Number(b.getBigUint64(12)) : b.getUint32(12);
+      if (!secs) return null; const d = new Date((secs - 2082844800) * 1000); return okDay(d) ? d : null;
+    }
+    pos += size;
+  }
+  return null;
+}
+function nameDay(n) { // IMG_20240501_093000.jpg / 2024-05-01 / 微信 mmexport1714500000000.jpg
+  let m = /(?:^|\D)(1\d{12})(?!\d)/.exec(n); if (m) { const d = new Date(+m[1]); if (okDay(d)) return d; }
+  m = /(?:^|\D)((?:19|20)\d{2})[-_.年]?(0[1-9]|1[0-2])[-_.月]?(0[1-9]|[12]\d|3[01])(?!\d)/.exec(n);
+  if (m) { const d = new Date(+m[1], +m[2] - 1, +m[3]); if (okDay(d)) return d; }
+  return null;
+}
+async function fileDay(f) { // → { day:'YYYY-MM-DD', src, strong }，结果缓存在 File 对象上
+  if (f._day) return f._day;
+  let d = null, src = '';
+  try {
+    if ((f.type || '').startsWith('image/') || IMG_RE.test(f.name)) { d = await exifDay(f); src = '拍摄时间'; }
+    else if (MP4_RE.test(f.name)) { d = await mp4Day(f); src = '录制时间'; }
+  } catch {}
+  if (!d) { d = nameDay(f.name); src = '文件名里的日期'; }
+  if (!d && f.lastModified) { const x = new Date(f.lastModified); if (okDay(x)) { d = x; src = '文件修改时间'; } }
+  return (f._day = d ? { day: ymd(d), src, strong: src !== '文件修改时间' } : { day: '', src: '', strong: false });
+}
+// 识别用：把照片缩成 768px 的 JPEG 再发给服务器（省流量，也省 AI 的额度）
+async function shrinkImage(f, max = 768) {
+  const bmp = await createImageBitmap(f), s = Math.min(1, max / Math.max(bmp.width, bmp.height)), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(bmp.width * s)); c.height = Math.max(1, Math.round(bmp.height * s));
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); if (bmp.close) bmp.close();
+  return new Promise((ok, no) => c.toBlob((b) => (b ? ok(b) : no(new Error('转换失败'))), 'image/jpeg', 0.8));
+}
 let activeRec = null; // 录音中的 MediaRecorder，离开页面时停掉，免得麦克风一直开着
 window.addEventListener('hashchange', () => { if (activeRec) { try { activeRec.stop(); } catch {} } });
 async function viewCompose(id, qs) {
@@ -339,7 +429,7 @@ async function viewCompose(id, qs) {
   $('#view').innerHTML = `<form class="panel" id="cf"><h3 style="margin:0">${post ? '编辑' : '新'}${names[type]}</h3>${typeSw}
     <div class="field"><span>${cap ? '写给谁（可多选；按「满几岁」解锁时以第一个为准）' : type === 'diary' ? '关于谁（可不选）' : '是谁的记录（不选＝全家；选两个＝双宝日常）'}</span>${kidSel}</div>
     ${type === 'record' ? `<div class="field"><span>分类</span><div class="sel">${CATS.map(([id, ic, n]) => `<label><input type="radio" name="category" value="${id}" ${(post ? post.category || 'daily' : CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : 'daily') === id ? 'checked' : ''}><span>${ic} ${n}</span></label>`).join('')}</div></div>` : ''}
-    ${cap ? '' : `<label class="field"><span>日期（这件事发生的那天）</span><input type="date" name="date" value="${post ? post.date : today()}" max="2100-01-01" required></label>`}
+    ${cap ? '' : `<label class="field"><span>日期（这件事发生的那天）</span><input type="date" name="date" value="${post ? post.date : today()}" max="2100-01-01" required></label><p class="note" id="dn" hidden></p>`}
     ${fresh ? `<div class="field"><span>什么时候开启</span><div class="row"><select name="unlockMode" id="um"><option value="date">指定日期</option><option value="age">孩子满几岁那天</option></select><input type="date" name="unlockDate" id="ud" min="${addYears(today(), 0)}"><span id="ua" hidden><input type="text" inputmode="numeric" name="unlockAge" id="uai" placeholder="18" maxlength="2" style="width:64px"> 岁</span></div><p class="note" id="uh"></p></div>
       <p class="note">⚠️ 封存之后，连你自己也看不到内容，要等到开启那天。写好再封存吧。</p>` : ''}
     <label class="field"><span>标题（可不写）</span><input type="text" name="title" maxlength="100" value="${esc(post ? post.title : '')}"></label>
@@ -347,7 +437,7 @@ async function viewCompose(id, qs) {
     ${type !== 'record' ? `<label class="field"><span>${cap ? '开启后谁能看' : '谁能看'}</span><select name="visibility">${visOpts.map(([v, l]) => `<option value="${v}" ${(post ? post.visibility : 'private') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
     <div class="field"><span>照片、视频和语音</span><div class="previews" id="pvs"></div>
       <input type="file" id="fi" accept="image/*,video/*,audio/*,.m4a,.mp3,.aac,.wav,.amr,.opus,.weba" multiple hidden>
-      <div class="row" style="margin-top:8px"><button type="button" class="btn ghost sm" id="pick">＋ 照片 / 视频 / 音频</button><button type="button" class="btn ghost sm" id="rec">🎙 录音</button><span class="note" id="rt"></span></div></div>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn ghost sm" id="pick">＋ 照片 / 视频 / 音频</button><button type="button" class="btn ghost sm" id="rec">🎙 录音</button>${S.who ? '<button type="button" class="btn ghost sm" id="who">🧑 识别是谁</button>' : ''}<span class="note" id="rt"></span></div></div>
     <div class="bar" id="bar" hidden><i></i></div><p class="note" id="st"></p><p class="err" hidden></p>
     <div class="row sp"><a class="btn ghost" href="javascript:history.back()">取消</a><button class="btn" id="ok">${post ? '保存' : cap ? '封存' : '发布'}</button></div></form>`;
   const pvs = $('#pvs');
@@ -356,7 +446,7 @@ async function viewCompose(id, qs) {
     const old = post ? post.media.filter((m) => !removed.has(m.id)).map((m) => `<div class="pv">${m.thumb || m.poster ? `<img src="${m.thumb || m.poster}" alt="">` : (m.kind === 'audio' ? '🎙 ' : '') + esc(m.name)}<button type="button" data-r="${m.id}">✕</button></div>`).join('') : '';
     pvs.innerHTML = old + files.map((f, i) => `<div class="pv">${f.type.startsWith('image/') && !/heic|heif/i.test(f.type) ? `<img src="${URL.createObjectURL(f)}" alt="">` : (isAudioFile(f) ? '🎙 ' : '🎬 ') + esc(f.name)}<button type="button" data-n="${i}">✕</button></div>`).join('');
     pvs.querySelectorAll('[data-r]').forEach((b) => (b.onclick = () => { removed.add(b.dataset.r); drawPv(); }));
-    pvs.querySelectorAll('[data-n]').forEach((b) => (b.onclick = () => { files.splice(+b.dataset.n, 1); drawPv(); }));
+    pvs.querySelectorAll('[data-n]').forEach((b) => (b.onclick = () => { files.splice(+b.dataset.n, 1); drawPv(); autoDate(); }));
   }
   drawPv();
   const form = $('#cf');
@@ -385,7 +475,34 @@ async function viewCompose(id, qs) {
     };
   }
   $('#pick').onclick = () => $('#fi').click();
-  $('#fi').onchange = (e) => { files = files.concat([...e.target.files]); e.target.value = ''; drawPv(); };
+  $('#fi').onchange = (e) => { files = files.concat([...e.target.files]); e.target.value = ''; drawPv(); autoDate(); };
+  // 新发布时：日期自动取文件自带的时间（多个文件取最早的一天）；自己手动改过日期就不再覆盖
+  let dateTouched = false, adTok = 0; const dateEl = form.elements.date;
+  if (dateEl) ['input', 'change'].forEach((ev) => dateEl.addEventListener(ev, () => { dateTouched = true; const n = $('#dn'); if (n) n.hidden = true; }));
+  async function autoDate() {
+    if (!dateEl || post || dateTouched || !files.length) return;
+    const my = ++adTok, rs = (await Promise.all(files.map(fileDay))).filter((r) => r.day);
+    if (my !== adTok || dateTouched || !rs.length) return;
+    const use = rs.some((r) => r.strong) ? rs.filter((r) => r.strong) : rs, days = use.map((r) => r.day).sort(), first = days[0], last = days[days.length - 1];
+    const src = use.find((r) => r.day === first).src; dateEl.value = first;
+    const n = $('#dn'); if (!n) return; n.hidden = false;
+    n.textContent = `已按${src}自动填成 ${first}` + (first !== last ? `（这些文件横跨 ${first} ~ ${last}，取了最早的一天）` : '') + (src === '文件修改时间' ? '。注意：这只是文件修改时间，从相册导入的文件常常是导入那天，请核对' : '，不对可以直接改');
+  }
+  if ($('#who')) $('#who').onclick = async () => {
+    const imgs = files.filter((f) => (f.type || '').startsWith('image/'));
+    if (!imgs.length) return toast('先选几张照片再识别');
+    const pick = imgs.length <= 6 ? imgs : Array.from({ length: 6 }, (_, i) => imgs[Math.floor((i * imgs.length) / 6)]);
+    const btn = $('#who'), old = btn.textContent; btn.disabled = true; btn.textContent = '识别中…';
+    try {
+      const fd = new FormData(); fd.append('date', dateEl ? dateEl.value : ''); let n = 0;
+      for (const f of pick) { try { fd.append('images', await shrinkImage(f), `p${++n}.jpg`); } catch { n--; } }
+      if (n <= 0) throw new Error('这些照片浏览器读不了（比如 HEIC），识别不了');
+      const r = await xhrSend('/api/ai/who', 'POST', fd, () => {});
+      const hit = (r.kidIds || []).map((id) => form.querySelector(`[name=kid][value="${id}"]`)).filter(Boolean);
+      hit.forEach((c) => (c.checked = true));
+      toast(hit.length ? `认出了：${hit.map((c) => kidOf(c.value).name).join('、')}，已帮你选上（不对请手动改）` : '没认出是谁，可能脸不清楚，请手动选');
+    } catch (x) { toast(x.message); } finally { btn.disabled = false; btn.textContent = old; }
+  };
   // 录音：直接在页面里录，存成一段语音（需要 HTTPS 访问才有麦克风权限）
   $('#rec').onclick = async () => {
     if (activeRec) { activeRec.stop(); return; }
@@ -590,12 +707,12 @@ async function viewMe() {
   ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
-    ${S.kids.map((k) => `<div class="item"><div>${esc(k.emoji)} <b>${esc(k.name)}</b><small>${k.birthday ? '生日 ' + k.birthday + ' · 现在 ' + ageText(k.birthday, today()) : '未填生日'}</small></div><div class="row"><button class="btn ghost sm" data-ek="${k.id}">编辑</button><button class="btn danger sm" data-dk="${k.id}">删除</button></div></div>`).join('') || '<p class="note">还没添加孩子</p>'}</div>
+    ${S.kids.map((k) => `<div class="item"><div>${esc(k.emoji)} <b>${esc(k.name)}</b><small>${k.birthday ? '生日 ' + k.birthday + ' · 现在 ' + ageText(k.birthday, today()) : '未填生日'}</small></div><div class="row"><button class="btn ghost sm" data-rk="${k.id}">📷 参考照 ${(k.refs || []).length}</button><button class="btn ghost sm" data-ek="${k.id}">编辑</button><button class="btn danger sm" data-dk="${k.id}">删除</button></div></div>`).join('') || '<p class="note">还没添加孩子</p>'}</div>
   <div class="panel"><div class="row sp"><h3 style="margin:0">👨‍👩‍👧 家人账号</h3><button class="btn sm" id="au">添加</button></div>
     ${users.map((u) => `<div class="item"><div><b>${esc(u.name)}</b><small>${esc(u.username)} · ${ROLE_NAME[u.role]}${u.kidId && kidOf(u.kidId) ? ' · ' + esc(kidOf(u.kidId).name) : ''}</small></div><div class="row"><button class="btn ghost sm" data-eu="${u.id}">编辑</button>${u.id !== S.me.id ? `<button class="btn danger sm" data-du="${u.id}">删除</button>` : ''}</div></div>`).join('')}
     <p class="note">孩子账号写的日记默认私密，管理员也看不到，除非她自己选择「家人都能看」。</p></div>
   <div class="panel"><div class="row sp"><h3 style="margin:0">✨ AI 助手</h3><button class="btn ghost sm" id="aic">设置</button></div>
-    <p class="note" style="margin-top:8px">${S.ai ? '已启用：发布页有「AI 帮我写」，时间线有「成长回顾」。' : '未启用。填入 OpenAI 兼容的接口地址（API 中转站，或 Hermes Agent 的 API Server）即可。'}<br>成长回顾只用「成长记录」，不会用到任何日记；「帮我写」只发送你主动点击时输入框里的文字。</p></div>
+    <p class="note" style="margin-top:8px">${S.ai ? '已启用：发布页有「AI 帮我写」「识别是谁」（需先给孩子传参考照），时间线有「成长回顾」。' : '未启用。填入 OpenAI 兼容的接口地址（API 中转站，或 Hermes Agent 的 API Server）即可。'}<br>成长回顾只用「成长记录」，不会用到任何日记；「帮我写」只发送你主动点击时输入框里的文字。</p></div>
   <div class="panel"><h3>⚙️ 站点</h3><div class="row sp"><span>名称：${esc(S.title)}</span><button class="btn ghost sm" id="st">修改</button></div>
     <p class="note" style="margin-top:10px">已存 ${stats.posts} 条记录 · ${stats.images} 张照片 · ${stats.videos} 个视频 · 占用 ${sizeText(stats.bytes)}${stats.pending ? ' · ⏳ 视频处理中 ' + stats.pending : ''}</p></div>` : ''}`;
   const refresh = () => boot().then(viewMe);
@@ -629,6 +746,7 @@ async function viewMe() {
   const kf = (k = {}) => [{ name: 'name', label: '名字', value: k.name }, { name: 'birthday', label: '生日（用来显示几岁几个月）', type: 'date', value: k.birthday }, { name: 'emoji', label: '头像表情（一个 emoji）', value: k.emoji || '🌸' }];
   $('#ak').onclick = () => formDialog('添加孩子', kf(), async (v) => { await api('/api/kids', { json: v }); await refresh(); });
   $('#view').querySelectorAll('[data-ek]').forEach((b) => (b.onclick = () => formDialog('编辑孩子', kf(kidOf(b.dataset.ek)), async (v) => { await api('/api/kids/' + b.dataset.ek, { method: 'PUT', json: v }); await refresh(); })));
+  $('#view').querySelectorAll('[data-rk]').forEach((b) => (b.onclick = () => refsDialog(b.dataset.rk)));
   $('#view').querySelectorAll('[data-dk]').forEach((b) => (b.onclick = async () => { if (confirmBox('删除这个孩子？已有的记录会保留，只是不再标记是谁的。')) { await api('/api/kids/' + b.dataset.dk, { method: 'DELETE' }); await refresh(); } }));
   const kidOpts = [['', '（不关联）'], ...S.kids.map((k) => [k.id, k.name])];
   const roleOpts = Object.entries(ROLE_NAME);
@@ -644,6 +762,9 @@ async function viewMe() {
       { name: 'baseUrl', label: '接口地址（含 /v1）', value: c.baseUrl, placeholder: 'https://你的中转站/v1' },
       { name: 'apiKey', label: '密钥', type: 'password', placeholder: c.hasKey ? '已保存，不改就留空' : 'sk-…' },
       { name: 'model', label: '模型名', value: c.model, placeholder: '例如 hermes-agent 或中转站支持的模型名' },
+      { name: 'visionModel', label: '「识别是谁」用的视觉模型名（可留空＝用上面的模型；要能看图）', value: c.visionModel, placeholder: '例如 gpt-4o / claude-sonnet / qwen-vl' },
+      { name: 'faceUrl', label: '或：自建人脸识别接口地址（可留空；填了就不用大模型识别）', value: c.faceUrl, placeholder: 'http://主机:端口/identify' },
+      { name: 'faceKey', label: '自建接口的密钥（可留空）', type: 'password', placeholder: c.hasFaceKey ? '已保存，不改就留空' : '' },
     ], async (v) => {
       await api('/api/ai/config', { method: 'PUT', json: v });
       try { const t = await api('/api/ai/test', { method: 'POST' }); toast('连接成功：' + t.reply); }
@@ -682,7 +803,7 @@ async function route() {
 }
 async function boot() {
   const d = await api('/api/init');
-  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai;
+  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai; S.who = !!d.who;
 }
 window.addEventListener('hashchange', route);
 boot().then(route).catch((e) => ($('#view').innerHTML = `<div class="empty">无法连接服务器：${esc(e.message)}</div>`));

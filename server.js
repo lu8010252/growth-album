@@ -125,6 +125,7 @@ function mediaOut(pid, m) {
   };
 }
 const kidById = (id) => kids.find((k) => k.id === id);
+const kidOut = (k) => ({ ...k, refs: (k.refs || []).map((r) => r.id) }); // 参考照片只给前端 id 列表
 /* 评论可见性：公开 / 悄悄话（仅管理员 · 指定的人 · 孩子满 18 岁后）。评论者本人永远看得到自己写的 */
 function canSeeComment(u, c) {
   const w = c.whisper;
@@ -259,7 +260,7 @@ const str = (v, n) => String(v ?? '').trim().slice(0, n);
 
 app.get('/api/init', (req, res) => {
   const me = readUser(req);
-  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids : [], settings: { title: settings.title }, ai: !!me && aiReady(), qaQuestions: me ? qaQuestions() : [] });
+  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids.map(kidOut) : [], settings: { title: settings.title }, ai: !!me && aiReady(), who: !!me && (aiReady() || !!aiCfg.faceUrl), qaQuestions: me ? qaQuestions() : [] });
 });
 app.post('/api/setup', (req, res) => {
   if (users.length) return res.status(403).json({ error: '已经初始化过了' });
@@ -305,8 +306,45 @@ app.put('/api/kids/:id', needAdmin, (req, res) => {
   const f = kidFields(req.body); if (!f.name) return res.status(400).json({ error: '请填写名字' });
   Object.assign(k, f); saveKids(); res.json(k);
 });
+/* 孩子的参考照片（给「识别是谁」用）：每人最多 5 张，缩成 512px 小图存在 data/kidrefs/ */
+const REFS_DIR = path.join(DATA, 'kidrefs'), MAX_REFS = 5;
+const refUpload = multer({
+  storage: multer.diskStorage({ destination: os.tmpdir(), filename: (req, file, cb) => cb(null, 'ref_' + rand(6) + path.extname(file.originalname).toLowerCase()) }),
+  limits: { fileSize: 30 * 1024 * 1024, files: MAX_REFS },
+  fileFilter: (req, file, cb) => cb(null, IMG_EXT.has(path.extname(file.originalname).toLowerCase())),
+});
+app.post('/api/kids/:id/refs', needAdmin, refUpload.array('files', MAX_REFS), async (req, res) => {
+  const files = req.files || [], k = kidById(req.params.id);
+  try {
+    if (!k) return res.status(404).json({ error: '没有这个孩子' });
+    k.refs = k.refs || [];
+    if (!files.length) return res.status(400).json({ error: '没有收到图片' });
+    if (k.refs.length >= MAX_REFS) return res.status(400).json({ error: `最多 ${MAX_REFS} 张，先删掉几张再加` });
+    const dir = path.join(REFS_DIR, k.id); fs.mkdirSync(dir, { recursive: true });
+    let bad = 0;
+    for (const f of files) {
+      if (k.refs.length >= MAX_REFS) break;
+      const id = rand(4), out = path.join(dir, id + '.jpg');
+      if (await ff(['-i', f.path, '-vf', "scale='min(512,iw)':-2", '-frames:v', '1', '-q:v', '4', out]) && exists(out)) k.refs.push({ id }); else bad++;
+    }
+    saveKids(); res.json({ ...kidOut(k), bad });
+  } catch (e) { console.error(e); res.status(500).json({ error: '保存失败：' + e.message }); }
+  finally { files.forEach((f) => fsp.rm(f.path, { force: true }).catch(() => {})); }
+});
+app.get('/api/kids/:id/refs/:rid', needLogin, (req, res) => {
+  const k = kidById(req.params.id), r = k && (k.refs || []).find((x) => x.id === req.params.rid);
+  if (!r) return res.status(404).end();
+  res.setHeader('Cache-Control', 'private, max-age=3600'); res.sendFile(path.join(REFS_DIR, k.id, r.id + '.jpg'));
+});
+app.delete('/api/kids/:id/refs/:rid', needAdmin, (req, res) => {
+  const k = kidById(req.params.id); if (!k) return res.status(404).json({ error: '没有这个孩子' });
+  const r = (k.refs || []).find((x) => x.id === req.params.rid);
+  if (r) { k.refs = k.refs.filter((x) => x !== r); saveKids(); fsp.rm(path.join(REFS_DIR, k.id, r.id + '.jpg'), { force: true }).catch(() => {}); }
+  res.json(kidOut(k));
+});
 app.delete('/api/kids/:id', needAdmin, (req, res) => {
   kids = kids.filter((x) => x.id !== req.params.id); saveKids();
+  fsp.rm(path.join(REFS_DIR, req.params.id), { recursive: true, force: true }).catch(() => {});
   users.forEach((u) => { if (u.kidId === req.params.id) u.kidId = null; }); saveUsers();
   for (const p of posts.values()) if (p.kidIds.includes(req.params.id)) { p.kidIds = p.kidIds.filter((k) => k !== req.params.id); savePost(p); }
   res.json({ ok: true });
@@ -697,14 +735,14 @@ app.delete('/api/movie/:id', needLogin, (req, res) => {
    走 OpenAI 兼容的 /chat/completions：API 中转站、Hermes Agent 的 API Server 都可以。
    隐私：成长回顾只用「成长记录」，日记（包括孩子的）一律不参与；
    「帮我写」只发送用户当前在输入框里、主动点击按钮的那段文字。 */
-async function aiChat(messages, { temperature = 0.7, timeout = 180e3 } = {}) {
+async function aiChat(messages, { temperature = 0.7, timeout = 180e3, model } = {}) {
   const url = aiCfg.baseUrl.replace(/\/+$/, '') + '/chat/completions';
   let r;
   try {
     r = await fetch(url, {
       method: 'POST', signal: AbortSignal.timeout(timeout),
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + aiCfg.apiKey },
-      body: JSON.stringify({ model: aiCfg.model, messages, temperature, stream: false }),
+      body: JSON.stringify({ model: model || aiCfg.model, messages, temperature, stream: false }),
     });
   } catch (e) { throw new Error('连不上 AI 服务：' + (e.name === 'TimeoutError' ? '等太久超时了' : (e.cause && e.cause.code) || e.message)); }
   const t = await r.text(); let d = null; try { d = JSON.parse(t); } catch {}
@@ -733,24 +771,92 @@ function ageText(b, d) {
   return Y > 0 ? (M > 0 ? `${Y}岁${M}个月` : `${Y}岁`) : `${M}个月`;
 }
 
-app.get('/api/ai/config', needAdmin, (req, res) => res.json({ baseUrl: aiCfg.baseUrl, model: aiCfg.model, hasKey: !!aiCfg.apiKey }));
+app.get('/api/ai/config', needAdmin, (req, res) => res.json({ baseUrl: aiCfg.baseUrl, model: aiCfg.model, hasKey: !!aiCfg.apiKey, visionModel: aiCfg.visionModel || '', faceUrl: aiCfg.faceUrl || '', hasFaceKey: !!aiCfg.faceKey }));
 app.put('/api/ai/config', needAdmin, (req, res) => {
   const baseUrl = str(req.body.baseUrl, 300), model = str(req.body.model, 100), key = str(req.body.apiKey, 500);
   if (baseUrl && !/^https?:\/\//i.test(baseUrl)) return res.status(400).json({ error: '地址要以 http:// 或 https:// 开头' });
   aiCfg.baseUrl = baseUrl; aiCfg.model = model;
   if (key) aiCfg.apiKey = key;
   if (req.body.clearKey) aiCfg.apiKey = '';
+  // 「识别是谁」的可选设置：视觉模型名（主模型不能看图时单独指定）、自建人脸识别接口
+  if (req.body.visionModel !== undefined) aiCfg.visionModel = str(req.body.visionModel, 100);
+  if (req.body.faceUrl !== undefined) {
+    const fu = str(req.body.faceUrl, 300);
+    if (fu && !/^https?:\/\//i.test(fu)) return res.status(400).json({ error: '识别接口地址要以 http:// 或 https:// 开头' });
+    aiCfg.faceUrl = fu;
+  }
+  if (str(req.body.faceKey, 500)) aiCfg.faceKey = str(req.body.faceKey, 500);
   saveAi(); res.json({ ok: true, ready: aiReady() });
 });
 const aiBusy = new Set();
-const aiGuard = (req, res, next) => {
-  if (!aiReady()) return res.status(400).json({ error: '管理员还没有配置 AI（「我的」页 → AI 助手）' });
+const aiBusyGuard = (req, res, next) => {
   if (aiBusy.has(req.user.id)) return res.status(429).json({ error: '上一个 AI 请求还没完成，稍等一下' });
   aiBusy.add(req.user.id); res.on('close', () => aiBusy.delete(req.user.id)); next();
+};
+const aiGuard = (req, res, next) => {
+  if (!aiReady()) return res.status(400).json({ error: '管理员还没有配置 AI（「我的」页 → AI 助手）' });
+  aiBusyGuard(req, res, next);
 };
 app.post('/api/ai/test', needAdmin, async (req, res) => {
   try { res.json({ reply: (await aiChat([{ role: 'user', content: '请只回复“收到”两个字。' }], { timeout: 60e3 })).slice(0, 60) }); }
   catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+/* ---------- 识别照片里是谁 ----------
+   两种后端，二选一（设置了 faceUrl 就走自建接口，否则走视觉大模型）：
+   1) 视觉大模型：OpenAI 兼容接口，要求模型能看图。把每个孩子的「参考照片」和待识别照片一起发过去，让模型对照着认。
+   2) 自建接口（faceUrl）：可以接 CompreFace / DeepFace 之类的本地人脸识别服务，约定见 README。
+   只在用户点「识别是谁」时才发送；发出去的是缩小后的照片，不会发送日记或文字。 */
+const whoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 6 } });
+const refB64 = async (k) => (await Promise.all((k.refs || []).map((r) => fsp.readFile(path.join(REFS_DIR, k.id, r.id + '.jpg')).then((b) => b.toString('base64')).catch(() => null)))).filter(Boolean);
+app.post('/api/ai/who', needWrite, (req, res, next) => (aiCfg.faceUrl || aiReady() ? aiBusyGuard(req, res, next) : res.status(400).json({ error: '管理员还没有配置 AI（「我的」页 → AI 助手）' })), whoUpload.array('images', 6), async (req, res) => {
+  try {
+    const imgs = (req.files || []).filter((f) => /^image\//.test(f.mimetype));
+    if (!imgs.length) return res.status(400).json({ error: '没有收到可识别的照片' });
+    const cand = kids.filter((k) => (k.refs || []).length);
+    if (!cand.length) return res.status(400).json({ error: '还没有参考照片：「我的」页 → 孩子 → 📷 参考照片，每人传 2~5 张清楚的正脸照' });
+    const date = isDay(req.body.date) ? req.body.date : localDay();
+    const refs = new Map(); for (const k of cand) refs.set(k.id, await refB64(k));
+    const ageOf = (k) => (k.birthday ? ageText(k.birthday, date) : '');
+    let photos; // 每张照片认出的孩子 id 数组，顺序同 imgs
+    if (aiCfg.faceUrl) {
+      let r;
+      try {
+        r = await fetch(aiCfg.faceUrl, {
+          method: 'POST', signal: AbortSignal.timeout(120e3),
+          headers: { 'Content-Type': 'application/json', ...(aiCfg.faceKey ? { Authorization: 'Bearer ' + aiCfg.faceKey } : {}) },
+          body: JSON.stringify({ date, candidates: cand.map((k) => ({ id: k.id, name: k.name, birthday: k.birthday || '', age: ageOf(k), refs: refs.get(k.id) })), images: imgs.map((f) => f.buffer.toString('base64')) }),
+        });
+      } catch (e) { return res.status(502).json({ error: '连不上识别接口：' + (e.name === 'TimeoutError' ? '等太久超时了' : (e.cause && e.cause.code) || e.message) }); }
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d) return res.status(502).json({ error: `识别接口返回 ${r.status}` });
+      const arr = Array.isArray(d.results) ? d.results : [{ kidIds: d.kidIds }];
+      photos = imgs.map((_, i) => ((arr[i] && arr[i].kidIds) || []).filter((id) => cand.some((k) => k.id === id)));
+    } else {
+      const parts = [{ type: 'text', text: '下面先给出每个孩子的参考照片，再给出待识别的照片。' }];
+      for (const k of cand) {
+        parts.push({ type: 'text', text: `【${k.name}${ageOf(k) ? `（拍待识别照片那天约${ageOf(k)}）` : ''}的参考照片，共${refs.get(k.id).length}张】` });
+        for (const b of refs.get(k.id)) parts.push({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b } });
+      }
+      parts.push({ type: 'text', text: `【待识别的照片，共${imgs.length}张】` });
+      imgs.forEach((f, i) => { parts.push({ type: 'text', text: `照片${i + 1}：` }); parts.push({ type: 'image_url', image_url: { url: `data:${f.mimetype};base64,` + f.buffer.toString('base64') } }); });
+      const names = cand.map((k) => k.name).join('、');
+      const system = `你是家庭相册的人物识别助手。根据参考照片，判断每张待识别的照片里出现了哪几个孩子。可选的名字只有：${names}。` +
+        '规则：只能从这些名字里选；孩子会随年龄长大，请结合参考照片的脸型、五官和给出的年龄综合判断；姐妹之间可能长得像，没把握就不要选；照片里没有人脸、脸看不清、只有大人或别的孩子，names 就给空数组，不要猜。' +
+        '只输出 JSON：{"photos":[{"index":1,"names":["名字"]}]}，index 从 1 开始，每张待识别的照片都要有一项，不要输出任何其他内容。';
+      let text;
+      try { text = await aiChat([{ role: 'system', content: system }, { role: 'user', content: parts }], { temperature: 0, timeout: 180e3, model: aiCfg.visionModel || aiCfg.model }); }
+      catch (e) { return res.status(502).json({ error: e.message + '（识别需要能看图的模型，可在「AI 助手 → 设置」里单独填视觉模型名）' }); }
+      const a = text.indexOf('{'), b = text.lastIndexOf('}'); let o = null;
+      if (a >= 0 && b > a) { try { o = JSON.parse(text.slice(a, b + 1)); } catch {} }
+      if (!o || !Array.isArray(o.photos)) return res.status(502).json({ error: 'AI 返回的格式看不懂，再试一次' });
+      photos = imgs.map((_, i) => {
+        const it = o.photos.find((x) => +x.index === i + 1);
+        return ((it && Array.isArray(it.names) ? it.names : []).map((n) => (cand.find((k) => k.name === String(n).trim()) || {}).id)).filter(Boolean);
+      });
+    }
+    res.json({ kidIds: [...new Set(photos.flat())], photos, count: imgs.length });
+  } catch (e) { console.error(e); res.status(500).json({ error: '识别失败：' + e.message }); }
 });
 
 const STYLES = { warm: '语气真诚温暖、自然口语', funny: '语气轻松幽默、带点俏皮，但不油腻', short: '尽量简洁，几句话说清楚，留白有余味' };
