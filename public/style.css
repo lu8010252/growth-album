@@ -189,3 +189,16 @@ dialog{max-height:90vh;overflow:auto}
 /* 家人出镜：和其他标签/筛选保持同样大小（类名别叫 mem，会和「那年今日」卡片 .mem 冲突） */
 .tag.who{background:var(--card);color:var(--ink);border:1px solid var(--c)}
 .wholine{font-size:14px;margin:8px 0 4px;line-height:1.6}
+
+.jump{display:flex;align-items:center;gap:8px;margin:2px 2px 4px;flex-wrap:wrap}
+.jump .chip{font-size:13px;padding:3px 12px}
+.month .mj{cursor:pointer}
+.month .mj:active{opacity:.6}
+.jdlg{border:0;padding:0;border-radius:16px;width:min(420px,92vw);max-height:86vh;background:var(--card);color:var(--ink)}
+.jdlg::backdrop{background:rgba(0,0,0,.4)}
+.jy{padding:8px 0}
+.jm{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:4px 0 14px}
+.jmb{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:12px;padding:8px 0;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;font:inherit}
+.jmb b{font-size:15px}.jmb small{font-size:11px;color:var(--muted)}
+.jmb:disabled{opacity:.35;cursor:default}
+.jmb:not(:disabled):active{background:var(--soft)}

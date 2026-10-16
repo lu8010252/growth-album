@@ -260,26 +260,59 @@ async function loadOnThisDay() {
     }).join('')}</div></div>`;
   }).join('');
 }
+/* ---------- 快速跳转：点月份标签 / 顶部「跳转」，选年、月、具体某天 ---------- */
+const jumpUrl = (mode, filter, to) => (mode === 'diary' ? '#/diary' : '#/') + '?' + [filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), to && 'to=' + to].filter(Boolean).join('&');
+const monthEnd = (ym) => ym + '-' + String(new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate()).padStart(2, '0');
+function jumpHtml(f) {
+  return `<div class="jump"><button class="chip" id="jp" type="button">📅 跳转到某年某月</button>${f.to ? `<span class="note">正在看 ${f.to} 以前的</span><a class="chip on" id="jb" href="#/">回到最新</a>` : ''}</div>`;
+}
+function bindJump(mode, filter, qs) {
+  const open = async (ym0) => {
+    let ms = []; try { ms = await api('/api/posts/months?' + ['type=' + (mode === 'diary' ? 'diary' : ''), filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q)].filter(Boolean).join('&')); } catch (e) { return toast(e.message); }
+    if (!ms.length) return toast('还没有可以跳转的记录');
+    const cnt = Object.fromEntries(ms.map((m) => [m.ym, m.n])), years = [...new Set(ms.map((m) => m.ym.slice(0, 4)))];
+    let yr = (ym0 || ms[0].ym).slice(0, 4); if (!years.includes(yr)) yr = years[0];
+    const d = document.createElement('dialog'); d.className = 'jdlg'; document.body.appendChild(d); d.showModal();
+    d.addEventListener('close', () => d.remove());
+    d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+    const go = (to) => { d.close(); location.hash = jumpUrl(mode, filter, to); };
+    const draw = () => {
+      d.innerHTML = `<div class="dlg"><h3>📅 跳转到</h3><div class="chips jy">${years.map((y) => `<a class="chip ${y === yr ? 'on' : ''}" data-y="${y}">${y}年</a>`).join('')}</div>
+      <div class="jm">${Array.from({ length: 12 }, (_, i) => { const ym = yr + '-' + String(i + 1).padStart(2, '0'), n = cnt[ym] || 0; return `<button type="button" class="jmb" data-m="${ym}" ${n ? '' : 'disabled'}><b>${i + 1}月</b><small>${n ? n + ' 条' : '—'}</small></button>`; }).join('')}</div>
+      <label class="field"><span>或者直接选某一天（显示这天以前的记录）</span><div class="row"><input type="date" id="jd" min="${ms[ms.length - 1].ym}-01" max="${today()}"><button class="btn" id="jg" type="button">跳转</button></div></label>
+      <div class="row" style="margin-top:8px"><button class="btn ghost" id="jl" type="button">回到最新</button><button class="btn ghost" id="jx" type="button">关闭</button></div></div>`;
+      d.querySelectorAll('[data-y]').forEach((a) => (a.onclick = () => { yr = a.dataset.y; draw(); }));
+      d.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => go(monthEnd(b.dataset.m))));
+      d.querySelector('#jg').onclick = () => { const v = d.querySelector('#jd').value; if (v) go(v); };
+      d.querySelector('#jl').onclick = () => go('');
+      d.querySelector('#jx').onclick = () => d.close();
+    };
+    draw();
+  };
+  if ($('#jp')) $('#jp').onclick = () => open('');
+  document.querySelectorAll('.mj').forEach((el) => (el.onclick = () => open(el.dataset.ym)));
+}
 async function viewTimeline(mode, qs) {
-  const filter = { kid: qs.get('kid') || '', member: (S.members || []).some((m) => m.id === qs.get('member')) ? qs.get('member') : '', q: qs.get('q') || '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '' };
+  const filter = { kid: qs.get('kid') || '', member: (S.members || []).some((m) => m.id === qs.get('member')) ? qs.get('member') : '', q: qs.get('q') || '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '', to: /^\d{4}-\d{2}-\d{2}$/.test(qs.get('to') || '') ? qs.get('to') : '' };
   const type = mode === 'diary' ? 'diary' : '';
   const plain = mode === 'home' && !filter.kid && !filter.cat && !filter.member;
   const chips = mode === 'diary' ? '' : `<div class="chips">${kidChipsHtml('#/', filter.kid, true, [filter.cat ? 'cat=' + filter.cat : '', filter.member ? 'member=' + filter.member : ''].filter(Boolean).join('&'))}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div>${memChipsHtml(filter)}<div class="chips cats">${catChipsHtml(filter.kid, filter.cat, filter.member)}</div>`;
-  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml() + '<div id="otd"></div>' : ''}${chips}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml() + '<div id="otd"></div>' : ''}${chips}${jumpHtml(filter)}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
   if (mode === 'home') loadOnThisDay();
   if ($('#rv')) $('#rv').onclick = () => openReview(filter.kid);
   let offset = 0, last = '', total = 0;
   const tl = $('#tl');
   async function load() {
-    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.member ? '&member=' + filter.member : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}`;
+    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.member ? '&member=' + filter.member : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}${filter.to ? '&to=' + filter.to : ''}`;
     const d = await api(u); total = d.total;
-    if (mode === 'home' && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `${[filter.kid && (kidOf(filter.kid) || {}).name, filter.member && (memberOf(filter.member) || {}).name].filter(Boolean).join(' 和 ')}${filter.kid && filter.member ? ' 同框' : ''}${filter.kid === 'together' ? '双宝日常' : ''}：共 ${total} 个瞬间`;
+    if (mode === 'home' && !filter.to && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `${[filter.kid && (kidOf(filter.kid) || {}).name, filter.member && (memberOf(filter.member) || {}).name].filter(Boolean).join(' 和 ')}${filter.kid && filter.member ? ' 同框' : ''}${filter.kid === 'together' ? '双宝日常' : ''}：共 ${total} 个瞬间`;
     let h = '';
-    for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span>${m}</span></div>`; } h += cardHtml(p, true); }
+    for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span class="mj" data-ym="${p.date.slice(0, 7)}">${m} ▾</span></div>`; } h += cardHtml(p, true); }
     tl.insertAdjacentHTML('beforeend', h); offset += d.items.length; NAV.count = offset;
     $('#more').hidden = offset >= total || !d.items.length;
     if (!total) tl.innerHTML = `<div class="empty">${mode === 'diary' ? '还没有日记' : filter.cat ? `还没有「${catOf(filter.cat)[2]}」的记录` : '还没有记录'}${canWrite() ? (filter.cat ? `<br><br><a class="btn" href="#/new?cat=${filter.cat}">记一条${catOf(filter.cat)[2]}</a>` : '<br>点下面的 ＋ 写下第一条吧') : ''}</div>`;
   }
+  bindJump(mode, filter, qs);
   $('#more button').onclick = () => load().catch((e) => toast(e.message));
   await load();
   const rs = NAV.restore; NAV.restore = null;

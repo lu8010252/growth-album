@@ -441,9 +441,8 @@ function capsuleFields(b, f) {
   if (r.unlockDate <= localDay()) return { error: '解锁日期要在今天之后' };
   return r;
 }
-app.get('/api/posts', needLogin, (req, res) => {
+function filterPosts(req) {
   const { kid, type, q, cat, member } = req.query;
-  const offset = Math.max(0, +req.query.offset || 0), limit = Math.min(50, +req.query.limit || 20);
   let list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p));   // 胶囊有自己的页面
   if (type) list = list.filter((p) => p.type === type);
   if (cat && CATS.includes(cat)) list = list.filter((p) => catOfPost(p) === cat);
@@ -451,6 +450,18 @@ app.get('/api/posts', needLogin, (req, res) => {
   else if (kid) list = list.filter((p) => p.kidIds.includes(kid));
   if (member) list = list.filter((p) => (p.memberIds || []).includes(member));   // 家人出镜；和 kid 同时给＝两人同框
   if (q) { const s = String(q).toLowerCase(); list = list.filter((p) => (p.title + ' ' + p.body).toLowerCase().includes(s)); }
+  return list;
+}
+// 每个月有几条（同样的筛选条件），给首页「快速跳转」用；要放在 /api/posts/:id 前面
+app.get('/api/posts/months', needLogin, (req, res) => {
+  const m = {};
+  for (const p of filterPosts(req)) { const k = String(p.date).slice(0, 7); m[k] = (m[k] || 0) + 1; }
+  res.json(Object.entries(m).sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([ym, n]) => ({ ym, n })));
+});
+app.get('/api/posts', needLogin, (req, res) => {
+  const offset = Math.max(0, +req.query.offset || 0), limit = Math.min(50, +req.query.limit || 20);
+  let list = filterPosts(req);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '')) list = list.filter((p) => p.date <= req.query.to);   // 从这一天往前看
   list.sort((a, b) => (a.date === b.date ? (a.createdAt < b.createdAt ? 1 : -1) : a.date < b.date ? 1 : -1));
   res.json({ total: list.length, items: list.slice(offset, offset + limit).map((p) => toClient(p, req.user)) });
 });
