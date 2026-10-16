@@ -457,7 +457,7 @@ async function viewCompose(id, qs) {
     ${type !== 'record' ? `<label class="field"><span>${cap ? '开启后谁能看' : '谁能看'}</span><select name="visibility">${visOpts.map(([v, l]) => `<option value="${v}" ${(post ? post.visibility : 'private') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
     <div class="field"><span>照片、视频和语音</span><div class="previews" id="pvs"></div>
       <input type="file" id="fi" accept="image/*,video/*,audio/*,.m4a,.mp3,.aac,.wav,.amr,.opus,.weba" multiple hidden>
-      <div class="row" style="margin-top:8px"><button type="button" class="btn ghost sm" id="pick">＋ 照片 / 视频 / 音频</button><button type="button" class="btn ghost sm" id="rec">🎙 录音</button>${S.who ? '<button type="button" class="btn ghost sm" id="who">🧑 识别是谁</button>' : ''}<span class="note" id="rt"></span></div></div>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn ghost sm" id="pick">＋ 照片 / 视频 / 音频</button><button type="button" class="btn ghost sm" id="rec">🎙 录音</button>${S.who ? '<button type="button" class="btn ghost sm" id="whoBtn">🧑 识别是谁</button>' : ''}<span class="note" id="rt"></span></div></div>
     <div class="bar" id="bar" hidden><i></i></div><p class="note" id="st"></p><p class="err" hidden></p>
     <div class="row sp"><a class="btn ghost" href="javascript:history.back()">取消</a><button class="btn" id="ok">${post ? '保存' : cap ? '封存' : '发布'}</button></div></form>`;
   const pvs = $('#pvs');
@@ -508,11 +508,11 @@ async function viewCompose(id, qs) {
     const n = $('#dn'); if (!n) return; n.hidden = false;
     n.textContent = `已按${src}自动填成 ${first}` + (first !== last ? `（这些文件横跨 ${first} ~ ${last}，取了最早的一天）` : '') + (src === '文件修改时间' ? '。注意：这只是文件修改时间，从相册导入的文件常常是导入那天，请核对' : '，不对可以直接改');
   }
-  if ($('#who')) $('#who').onclick = async () => {
+  if ($('#whoBtn')) $('#whoBtn').onclick = async () => {
     const imgs = files.filter((f) => (f.type || '').startsWith('image/'));
     if (!imgs.length) return toast('先选几张照片再识别');
     const pick = imgs.length <= 6 ? imgs : Array.from({ length: 6 }, (_, i) => imgs[Math.floor((i * imgs.length) / 6)]);
-    const btn = $('#who'), old = btn.textContent; btn.disabled = true; btn.textContent = '识别中…';
+    const btn = $('#whoBtn'), old = btn.textContent; btn.disabled = true; btn.textContent = '识别中…';
     try {
       const fd = new FormData(); fd.append('date', dateEl ? dateEl.value : ''); let n = 0;
       for (const f of pick) { try { fd.append('images', await shrinkImage(f), `p${++n}.jpg`); } catch { n--; } }
