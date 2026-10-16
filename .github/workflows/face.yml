@@ -22,11 +22,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Diagnose (temporary)
-        continue-on-error: true
-        run: |
-          docker build --progress=plain -t facetest face-service > build.log 2>&1 || true
-          echo "::error title=build-log::$(tail -40 build.log | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')"
       - uses: docker/build-push-action@v6
         with:
           context: face-service
