@@ -1,0 +1,13 @@
+# 自建人脸识别服务（可选）。成长册里「我的 → AI 助手 → 设置」的「自建人脸识别接口地址」填：
+#   http://host.docker.internal:8000/identify
+services:
+  growth-album-face:
+    image: ghcr.io/lu8010252/growth-album-face:latest
+    container_name: growth-album-face
+    restart: unless-stopped
+    ports:
+      - "8000:8000"          # 只给成长册用，别对公网开放；下面的 FACE_KEY 再加一道锁
+    environment:
+      - FACE_KEY=换成一串随机字符     # 成长册里「自建接口的密钥」填同一串
+      - THRESHOLD=0.38                # 认不出就调低（如 0.32），认错就调高（如 0.45）
+      - TZ=Asia/Shanghai

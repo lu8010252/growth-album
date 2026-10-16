@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths-ignore: ['mobile/**', '.github/workflows/android.yml', '*.md']
+    paths-ignore: ['face-service/**', '.github/workflows/face.yml', 'mobile/**', '.github/workflows/android.yml', '*.md']
 
 permissions:
   contents: read
