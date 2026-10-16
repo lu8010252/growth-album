@@ -19,15 +19,18 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
-    // 返回键：交给网页自己处理（先关大图、再回上一页并保留位置）；网页说“没有可返回的”才退出 App
+    // 返回键：交给网页自己处理（先关大图、再回上一页并保留位置）；网页说“没有可返回的”才退到桌面。
+    // 注意：这个回调必须始终保持启用。以前在首页返回时调用 setEnabled(false) 再走系统默认返回，
+    // 回调从此被永久关掉；App 没被杀掉、再次打开时，所有页面按返回都会被系统直接送回桌面。
+    // 现在改为 moveTaskToBack(true)（效果和按 Home 一样，App 留在后台），回调不再被关闭。
     getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
       @Override
       public void handleOnBackPressed() {
-        final WebView wv = getBridge().getWebView();
+        final WebView wv = getBridge() == null ? null : getBridge().getWebView();
+        if (wv == null) { moveTaskToBack(true); return; }
         wv.evaluateJavascript("(function(){try{return window.__appBack?window.__appBack():false}catch(e){return false}})()", v -> {
           if ("true".equals(v)) return;
-          setEnabled(false);
-          getOnBackPressedDispatcher().onBackPressed();
+          moveTaskToBack(true);
         });
       }
     });
