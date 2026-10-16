@@ -284,6 +284,7 @@ async function viewTimeline(mode, qs) {
   await load();
   const rs = NAV.restore; NAV.restore = null;
   if (rs && rs.y) {
+    NAV.restored = true;
     while (offset < rs.n && offset < total && !$('#more').hidden) await load();
     requestAnimationFrame(() => { window.scrollTo(0, rs.y); setTimeout(() => window.scrollTo(0, rs.y), 250); });
   }
@@ -817,7 +818,8 @@ async function route() {
   NAV.curI = hi; NAV.cur = location.hash;
   const [path, q] = location.hash.slice(1).split('?'), qs = new URLSearchParams(q || '');
   const seg = path.split('/').filter(Boolean);
-  window.scrollTo(0, 0);
+  // 不在这里提前回到顶部（否则点进详情前会先闪到顶）；新页面渲染好后再回顶
+  NAV.restored = false;
   try {
     if (!S.me) { chrome(''); return viewLogin(S.needSetup); }
     if (seg[0] === 'login') { location.hash = '#/'; return; }
@@ -838,6 +840,7 @@ async function route() {
     if (r === 'qa') return await viewQa(qs);
     location.hash = '#/';
   } catch (e) { $('#view').innerHTML = `<div class="empty">${esc(e.message)}<br><br><a class="btn ghost" href="#/">回首页</a></div>`; }
+  finally { if (!NAV.restored) window.scrollTo(0, 0); }
 }
 async function boot() {
   const d = await api('/api/init');
