@@ -62,7 +62,7 @@ const monthText = (d) => `${d.slice(0, 4)}年${+d.slice(5, 7)}月`;
 const sizeText = (n) => (n > 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' : n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.ceil(n / 1024) + ' KB');
 function kidTags(p) {
   const ks = p.kidIds.map(kidOf).filter(Boolean), ms = (p.memberIds || []).map(memberOf).filter(Boolean);
-  const mt = ms.map((m) => `<span class="tag mem" style="--c:${m.color}">${esc(m.emoji)} ${esc(m.name)}</span>`).join('');
+  const mt = ms.map((m) => `<span class="tag who" style="--c:${m.color}">${esc(m.emoji)} ${esc(m.name)}</span>`).join('');
   if (!ks.length) return (p.type === 'diary' ? '' : '<span class="tag" style="background:#8c7b72">🏠 全家</span>') + mt;
   return ks.map((k) => `<span class="tag" style="background:${k.color}">${esc(k.emoji)} ${esc(k.name)}${k.birthday ? ' · ' + ageText(k.birthday, p.date) : ''}</span>`).join('') + mt;
 }
@@ -165,13 +165,16 @@ function openReview(defKid) {
 
 /* ---------- 大图查看 ---------- */
 const LB = { list: [], i: 0 };
-function openLB(list, i) { LB.list = list; LB.i = i; showLB(); $('#lb').hidden = false; }
+function openLB(list, i) { LB.list = list; LB.i = i; showLB(); $('#lb').hidden = false; history.pushState({ ...(history.state || {}), lb: 1 }, ''); }
 function showLB() { $('#lb img').src = LB.list[LB.i]; $('#lb .nv').hidden = LB.list.length < 2; }
-$('#lb .x').onclick = () => ($('#lb').hidden = true);
+function closeLB() { if ($('#lb').hidden) return; if (history.state && history.state.lb) history.back(); else $('#lb').hidden = true; }
+// 手机返回键：先关大图（不离开当前页），不会直接退出
+window.addEventListener('popstate', () => { if (!$('#lb').hidden && !(history.state && history.state.lb)) $('#lb').hidden = true; });
+$('#lb .x').onclick = closeLB;
 $('#lb .p').onclick = () => { LB.i = (LB.i - 1 + LB.list.length) % LB.list.length; showLB(); };
 $('#lb .n').onclick = () => { LB.i = (LB.i + 1) % LB.list.length; showLB(); };
-$('#lb').addEventListener('click', (e) => { if (e.target.id === 'lb') $('#lb').hidden = true; });
-document.addEventListener('keydown', (e) => { if ($('#lb').hidden) return; if (e.key === 'Escape') $('#lb').hidden = true; if (e.key === 'ArrowLeft') $('#lb .p').click(); if (e.key === 'ArrowRight') $('#lb .n').click(); });
+$('#lb').addEventListener('click', (e) => { if (e.target.id === 'lb') closeLB(); });
+document.addEventListener('keydown', (e) => { if ($('#lb').hidden) return; if (e.key === 'Escape') closeLB(); if (e.key === 'ArrowLeft') $('#lb .p').click(); if (e.key === 'ArrowRight') $('#lb .n').click(); });
 let tx = 0;
 $('#lb').addEventListener('touchstart', (e) => (tx = e.touches[0].clientX), { passive: true });
 $('#lb').addEventListener('touchend', (e) => { const dx = e.changedTouches[0].clientX - tx; if (Math.abs(dx) > 60 && LB.list.length > 1) (dx > 0 ? $('#lb .p') : $('#lb .n')).click(); });
@@ -232,11 +235,11 @@ function heroHtml() {
 }
 // 筛选条：孩子 + 分类，两者可以叠加
 function filterHref(kid, cat, mem) { const a = [kid ? 'kid=' + kid : '', cat ? 'cat=' + cat : '', mem ? 'member=' + mem : ''].filter(Boolean).join('&'); return '#/' + (a ? '?' + a : ''); }
-// 家人出镜筛选：和上面的孩子筛选叠加＝「爸爸 + 大宝」同框；字号做大，老人也看得清
+// 家人出镜筛选：和上面的孩子筛选叠加＝「爸爸 + 大宝」同框
 function memChipsHtml(filter) {
   if (!(S.members || []).length) return '';
   const href = (m) => filterHref(filter.kid, filter.cat, m);
-  return `<div class="chips mem"><span class="lbl">👪 谁出镜</span><a class="chip ${filter.member ? '' : 'on'}" href="${href('')}">不限</a>` + S.members.map((m) => `<a class="chip ${filter.member === m.id ? 'on' : ''}" href="${href(m.id)}">${esc(m.emoji)} ${esc(m.name)}</a>`).join('') + '</div>';
+  return `<div class="chips whochips"><span class="lbl">👪 谁出镜</span><a class="chip ${filter.member ? '' : 'on'}" href="${href('')}">不限</a>` + S.members.map((m) => `<a class="chip ${filter.member === m.id ? 'on' : ''}" href="${href(m.id)}">${esc(m.emoji)} ${esc(m.name)}</a>`).join('') + '</div>';
 }
 function catChipsHtml(kid, cat, mem) {
   return `<a class="chip ${cat ? '' : 'on'}" href="${filterHref(kid, '', mem)}">全部分类</a>` + CATS.map(([id, ic, n]) => `<a class="chip ${cat === id ? 'on' : ''}" href="${filterHref(kid, id, mem)}">${ic} ${n}</a>`).join('');
@@ -273,12 +276,17 @@ async function viewTimeline(mode, qs) {
     if (mode === 'home' && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `${[filter.kid && (kidOf(filter.kid) || {}).name, filter.member && (memberOf(filter.member) || {}).name].filter(Boolean).join(' 和 ')}${filter.kid && filter.member ? ' 同框' : ''}${filter.kid === 'together' ? '双宝日常' : ''}：共 ${total} 个瞬间`;
     let h = '';
     for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span>${m}</span></div>`; } h += cardHtml(p, true); }
-    tl.insertAdjacentHTML('beforeend', h); offset += d.items.length;
+    tl.insertAdjacentHTML('beforeend', h); offset += d.items.length; NAV.count = offset;
     $('#more').hidden = offset >= total || !d.items.length;
     if (!total) tl.innerHTML = `<div class="empty">${mode === 'diary' ? '还没有日记' : filter.cat ? `还没有「${catOf(filter.cat)[2]}」的记录` : '还没有记录'}${canWrite() ? (filter.cat ? `<br><br><a class="btn" href="#/new?cat=${filter.cat}">记一条${catOf(filter.cat)[2]}</a>` : '<br>点下面的 ＋ 写下第一条吧') : ''}</div>`;
   }
   $('#more button').onclick = () => load().catch((e) => toast(e.message));
   await load();
+  const rs = NAV.restore; NAV.restore = null;
+  if (rs && rs.y) {
+    while (offset < rs.n && offset < total && !$('#more').hidden) await load();
+    requestAnimationFrame(() => { window.scrollTo(0, rs.y); setTimeout(() => window.scrollTo(0, rs.y), 250); });
+  }
 }
 
 /* ---------- 详情 ---------- */
@@ -432,7 +440,7 @@ async function viewCompose(id, qs) {
   const selKids = new Set(post ? post.kidIds : []), selMems = new Set(post ? post.memberIds || [] : []);
   let files = []; const removed = new Set();
   const kidSel = `<div class="sel">${S.kids.map((k) => `<label><input type="checkbox" name="kid" value="${k.id}" ${selKids.has(k.id) ? 'checked' : ''}><span>${esc(k.emoji)} ${esc(k.name)}</span></label>`).join('')}</div>`;
-  const memSel = (S.members || []).length && type !== 'capsule' ? `<div class="field"><span>出镜的家人（可多选，没有就不选）</span><div class="sel big">${S.members.map((m) => `<label><input type="checkbox" name="member" value="${m.id}" ${selMems.has(m.id) ? 'checked' : ''}><span>${esc(m.emoji)} ${esc(m.name)}</span></label>`).join('')}</div></div>` : '';
+  const memSel = (S.members || []).length && type !== 'capsule' ? `<div class="field"><span>出镜的家人（可多选，没有就不选）</span><div class="sel">${S.members.map((m) => `<label><input type="checkbox" name="member" value="${m.id}" ${selMems.has(m.id) ? 'checked' : ''}><span>${esc(m.emoji)} ${esc(m.name)}</span></label>`).join('')}</div></div>` : '';
   const names = { record: '成长记录', diary: '日记', capsule: '写给未来的信' };
   const typeSw = post ? '' : `<div class="chips" style="padding:8px 0 0">${Object.entries(names).map(([t, n]) => `<a class="chip ${t === type ? 'on' : ''}" href="#/new${t === 'record' ? '' : '?type=' + t}">${n}</a>`).join('')}</div>`;
   const visOpts = type === 'diary' ? [['private', '🔒 只有我自己'], ['family', '👨‍👩‍👧 家人都能看']] : [['private', '🎁 只给收信的孩子（和我自己）'], ['family', '👨‍👩‍👧 开启后家人都能看']];
@@ -797,7 +805,16 @@ async function viewMe() {
 }
 
 /* ---------- 路由 ---------- */
+const NAV = { y: 0, count: 0, max: 0, curI: null, cur: '', saved: {}, restore: null };
+history.scrollRestoration = 'manual';
+window.addEventListener('scroll', () => { NAV.y = window.scrollY; }, { passive: true });
 async function route() {
+  // 记录离开页面的滚动位置；若是「返回」，回到原来的位置（含已加载的条数）
+  NAV.saved[NAV.cur] = { y: NAV.y, n: NAV.count }; NAV.count = 0;
+  const st = history.state || {}; let hi = st.i;
+  if (hi == null) { hi = ++NAV.max; history.replaceState({ ...st, i: hi }, ''); } else NAV.max = Math.max(NAV.max, hi);
+  NAV.restore = NAV.curI != null && hi < NAV.curI ? NAV.saved[location.hash] || null : null;
+  NAV.curI = hi; NAV.cur = location.hash;
   const [path, q] = location.hash.slice(1).split('?'), qs = new URLSearchParams(q || '');
   const seg = path.split('/').filter(Boolean);
   window.scrollTo(0, 0);

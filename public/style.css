@@ -186,10 +186,8 @@ details.more summary{cursor:pointer;font-size:13px;color:var(--muted)}
 .qa span:last-child{white-space:pre-wrap;word-break:break-word}
 dialog{max-height:90vh;overflow:auto}
 
-/* 家人出镜：字号做大，老人也看得清 */
-.tag.mem{background:#fff;color:var(--ink);border:2px solid var(--c);font-size:15px;font-weight:600;line-height:24px;padding:0 12px}
-.chips.mem{align-items:center}
-.chips.mem .lbl{flex:none;font-size:16px;font-weight:600;padding-right:2px}
-.chips.mem .chip{font-size:17px;padding:8px 18px;border-width:2px}
-.sel.big span{font-size:18px;padding:9px 20px;border-width:2px}
-.wholine{font-size:19px;font-weight:600;margin:10px 0 4px;line-height:1.6}
+/* 家人出镜：和其他标签/筛选保持同样大小（类名别叫 mem，会和「那年今日」卡片 .mem 冲突） */
+.tag.who{background:var(--card);color:var(--ink);border:1px solid var(--c)}
+.chips.whochips{align-items:center}
+.chips.whochips .lbl{flex:none;font-size:13px;color:var(--muted,#8a7f78);padding-right:2px}
+.wholine{font-size:14px;margin:8px 0 4px;line-height:1.6}
