@@ -229,12 +229,15 @@ function cardHtml(p, rail) {
   return `<div class="tli"><div class="rail"><b>${+p.date.slice(8)}</b><small>周${wd}</small></div>${card}</div>`;
 }
 const greet = () => { const h = new Date().getHours(); return h < 6 ? '夜深了' : h < 11 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好'; };
-function heroHtml() {
-  const kids = S.kids.map((k) => `<div class="kp"><i style="background:${k.color}">${esc(k.emoji)}</i><b>${esc(k.name)}</b>${k.birthday ? `<small>${ageText(k.birthday, today())}</small>` : ''}</div>`).join('');
-  return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}</div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>` : ''}</section>`;
+function heroHtml(filter) {
+  const sel = (filter && filter.kid && filter.kid !== 'together' ? filter.kid.split(',') : filter && filter.kid === 'together' ? S.kids.map((k) => k.id) : []);
+  const tog = (id) => { const n = sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]; return filterHref(n.join(','), filter.cat, filter.member); };
+  const kids = S.kids.map((k) => `<a class="kp ${sel.includes(k.id) ? 'on' : ''}" href="${tog(k.id)}"><i style="background:${k.color}">${esc(k.emoji)}</i><b>${esc(k.name)}</b>${k.birthday ? `<small>${ageText(k.birthday, today())}</small>` : ''}</a>`).join('');
+  return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}</div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>${S.kids.length > 1 ? '<div class="kphint">点名字筛选；两个都点＝双宝同框；再点一下取消</div>' : ''}` : ''}</section>`;
 }
 // 筛选条：孩子 + 分类，两者可以叠加
-function filterHref(kid, cat, mem) { const a = [kid ? 'kid=' + kid : '', cat ? 'cat=' + cat : '', mem ? 'member=' + mem : ''].filter(Boolean).join('&'); return '#/' + (a ? '?' + a : ''); }
+let CUR_F = {};   // 当前时间线的搜索词和媒体类型，切换孩子/分类时带着走
+function filterHref(kid, cat, mem) { const a = [kid ? 'kid=' + kid : '', cat ? 'cat=' + cat : '', mem ? 'member=' + mem : '', CUR_F.q ? 'q=' + encodeURIComponent(CUR_F.q) : '', CUR_F.media ? 'media=' + CUR_F.media : ''].filter(Boolean).join('&'); return '#/' + (a ? '?' + a : ''); }
 // 家人出镜筛选：和上面的孩子筛选叠加＝「爸爸 + 大宝」同框
 function memChipsHtml(filter) {
   if (!(S.members || []).length) return '';
@@ -260,15 +263,28 @@ async function loadOnThisDay() {
     }).join('')}</div></div>`;
   }).join('');
 }
+/* ---------- 搜索：关键词 + 图片/视频/音频 ---------- */
+function searchHtml(f) {
+  const mt = [['', '全部'], ['image', '🖼 图片'], ['video', '🎬 视频'], ['audio', '🎙 音频']];
+  return `<form class="sbar" id="sf"><input type="text" id="sq" placeholder="搜标题、文字、文件名" value="${esc(f.q)}" enterkeyhint="search"><button class="btn sm" type="submit">搜索</button></form>
+  <div class="chips" id="sm">${mt.map(([k, n]) => `<a class="chip ${f.media === k ? 'on' : ''}" data-md="${k}">${n}</a>`).join('')}${f.q || f.media ? '<a class="chip" id="sc">清除搜索</a>' : ''}</div>`;
+}
+function bindSearch(mode, filter) {
+  const go = (q, media) => { location.hash = jumpUrl(mode, { ...filter, q, media }, ''); };
+  $('#sf').onsubmit = (e) => { e.preventDefault(); go($('#sq').value.trim(), filter.media); };
+  document.querySelectorAll('#sm [data-md]').forEach((a) => (a.onclick = () => go($('#sq').value.trim(), a.dataset.md)));
+  if ($('#sc')) $('#sc').onclick = () => go('', '');
+}
+
 /* ---------- 快速跳转：点月份标签 / 顶部「跳转」，选年、月、具体某天 ---------- */
-const jumpUrl = (mode, filter, to) => (mode === 'diary' ? '#/diary' : '#/') + '?' + [filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), to && 'to=' + to].filter(Boolean).join('&');
+const jumpUrl = (mode, filter, to) => (mode === 'diary' ? '#/diary' : '#/') + '?' + [filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), filter.media && 'media=' + filter.media, to && 'to=' + to].filter(Boolean).join('&');
 const monthEnd = (ym) => ym + '-' + String(new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate()).padStart(2, '0');
-function jumpHtml(f) {
-  return `<div class="jump"><button class="chip" id="jp" type="button">📅 跳转到某年某月</button>${f.to ? `<span class="note">正在看 ${f.to} 以前的</span><a class="chip on" id="jb" href="#/">回到最新</a>` : ''}</div>`;
+function jumpHtml(f, mode) {
+  return `<div class="jump"><button class="chip" id="jp" type="button">📅 跳转到某年某月</button>${f.to ? `<span class="note">正在看 ${f.to} 以前的</span><a class="chip on" id="jb" href="${jumpUrl(mode, f, '')}">回到最新</a>` : ''}</div>`;
 }
 function bindJump(mode, filter, qs) {
   const open = async (ym0) => {
-    let ms = []; try { ms = await api('/api/posts/months?' + ['type=' + (mode === 'diary' ? 'diary' : ''), filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q)].filter(Boolean).join('&')); } catch (e) { return toast(e.message); }
+    let ms = []; try { ms = await api('/api/posts/months?' + ['type=' + (mode === 'diary' ? 'diary' : ''), filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), filter.media && 'media=' + filter.media].filter(Boolean).join('&')); } catch (e) { return toast(e.message); }
     if (!ms.length) return toast('还没有可以跳转的记录');
     const cnt = Object.fromEntries(ms.map((m) => [m.ym, m.n])), years = [...new Set(ms.map((m) => m.ym.slice(0, 4)))];
     let yr = (ym0 || ms[0].ym).slice(0, 4); if (!years.includes(yr)) yr = years[0];
@@ -293,26 +309,26 @@ function bindJump(mode, filter, qs) {
   document.querySelectorAll('.mj').forEach((el) => (el.onclick = () => open(el.dataset.ym)));
 }
 async function viewTimeline(mode, qs) {
-  const filter = { kid: qs.get('kid') || '', member: (S.members || []).some((m) => m.id === qs.get('member')) ? qs.get('member') : '', q: qs.get('q') || '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '', to: /^\d{4}-\d{2}-\d{2}$/.test(qs.get('to') || '') ? qs.get('to') : '' };
+  const filter = { kid: qs.get('kid') || '', member: (S.members || []).some((m) => m.id === qs.get('member')) ? qs.get('member') : '', q: qs.get('q') || '', media: ['image', 'video', 'audio'].includes(qs.get('media')) ? qs.get('media') : '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '', to: /^\d{4}-\d{2}-\d{2}$/.test(qs.get('to') || '') ? qs.get('to') : '' };
   const type = mode === 'diary' ? 'diary' : '';
-  const plain = mode === 'home' && !filter.kid && !filter.cat && !filter.member;
-  const chips = mode === 'diary' ? '' : `<div class="chips">${kidChipsHtml('#/', filter.kid, true, [filter.cat ? 'cat=' + filter.cat : '', filter.member ? 'member=' + filter.member : ''].filter(Boolean).join('&'))}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div>${memChipsHtml(filter)}<div class="chips cats">${catChipsHtml(filter.kid, filter.cat, filter.member)}</div>`;
-  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml() + '<div id="otd"></div>' : ''}${chips}${jumpHtml(filter)}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  CUR_F = filter;
+  const plain = mode === 'home' && !filter.kid && !filter.cat && !filter.member && !filter.q && !filter.media;
+  const chips = mode === 'diary' ? '' : `${memChipsHtml(filter)}<div class="chips cats">${catChipsHtml(filter.kid, filter.cat, filter.member)}</div>`;
+  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml(filter) + '<div id="otd"></div>' : ''}${searchHtml(filter)}${chips}${jumpHtml(filter, mode)}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
   if (mode === 'home') loadOnThisDay();
-  if ($('#rv')) $('#rv').onclick = () => openReview(filter.kid);
   let offset = 0, last = '', total = 0;
   const tl = $('#tl');
   async function load() {
-    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.member ? '&member=' + filter.member : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}${filter.to ? '&to=' + filter.to : ''}`;
+    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.member ? '&member=' + filter.member : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}${filter.to ? '&to=' + filter.to : ''}${filter.media ? '&media=' + filter.media : ''}`;
     const d = await api(u); total = d.total;
-    if (mode === 'home' && !filter.to && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `${[filter.kid && (kidOf(filter.kid) || {}).name, filter.member && (memberOf(filter.member) || {}).name].filter(Boolean).join(' 和 ')}${filter.kid && filter.member ? ' 同框' : ''}${filter.kid === 'together' ? '双宝日常' : ''}：共 ${total} 个瞬间`;
+    if (mode === 'home' && !filter.to && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `${[...(filter.kid && filter.kid !== 'together' ? filter.kid.split(',').map((id) => (kidOf(id) || {}).name) : []), filter.member && (memberOf(filter.member) || {}).name].filter(Boolean).join(' 和 ')}${(filter.kid && filter.kid.includes(',')) || (filter.kid && filter.member) ? ' 同框' : ''}${filter.kid === 'together' ? '双宝日常' : ''}${filter.q ? '「' + filter.q + '」' : ''}${{ image: ' 图片', video: ' 视频', audio: ' 音频' }[filter.media] || ''}：共 ${total} 个瞬间`;
     let h = '';
     for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span class="mj" data-ym="${p.date.slice(0, 7)}">${m} ▾</span></div>`; } h += cardHtml(p, true); }
     tl.insertAdjacentHTML('beforeend', h); offset += d.items.length; NAV.count = offset;
     $('#more').hidden = offset >= total || !d.items.length;
-    if (!total) tl.innerHTML = `<div class="empty">${mode === 'diary' ? '还没有日记' : filter.cat ? `还没有「${catOf(filter.cat)[2]}」的记录` : '还没有记录'}${canWrite() ? (filter.cat ? `<br><br><a class="btn" href="#/new?cat=${filter.cat}">记一条${catOf(filter.cat)[2]}</a>` : '<br>点下面的 ＋ 写下第一条吧') : ''}</div>`;
+    if (!total) tl.innerHTML = `<div class="empty">${filter.q || filter.media ? '没有找到符合的记录' : mode === 'diary' ? '还没有日记' : filter.cat ? `还没有「${catOf(filter.cat)[2]}」的记录` : '还没有记录'}${canWrite() ? (filter.cat ? `<br><br><a class="btn" href="#/new?cat=${filter.cat}">记一条${catOf(filter.cat)[2]}</a>` : '<br>点下面的 ＋ 写下第一条吧') : ''}</div>`;
   }
-  bindJump(mode, filter, qs);
+  bindJump(mode, filter, qs); bindSearch(mode, filter);
   $('#more button').onclick = () => load().catch((e) => toast(e.message));
   await load();
   const rs = NAV.restore; NAV.restore = null;
@@ -758,6 +774,7 @@ async function viewMe() {
   <div class="panel"><h3>${esc(S.me.name)}</h3><p class="note">${ROLE_NAME[S.me.role]} · 用户名 ${esc(S.me.username)}</p>
     <div class="row"><button class="btn ghost sm" id="rn">改名字</button><button class="btn ghost sm" id="pw">改密码</button><button class="btn ghost sm" id="lo">退出登录</button></div></div>
   <div class="panel"><h3>📦 导出</h3><p class="note">打包成 zip：里面有原图原视频、每条记录的文字，用浏览器打开 index.html 就能离线翻看。长大后转给她们就用这个。</p><div class="row">${exportBtns}</div></div>
+  ${S.ai && ['admin', 'member'].includes(S.me.role) ? '<div class="panel"><h3>✨ 成长回顾</h3><p class="note">让 AI 把选定孩子、某段时间的成长记录整理成一篇回顾，只用「成长记录」，不会用到任何日记。</p><div class="row"><button class="btn ghost sm" id="rv">生成成长回顾</button></div></div>' : ''}
   <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频，生日聚会时拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。做好的视频暂存在服务器上约 6 小时，用完可以点「🗑 删除」释放空间。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvl"></div></div>
   ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
@@ -799,6 +816,7 @@ async function viewMe() {
   $('#rn').onclick = () => formDialog('改名字', [{ name: 'name', label: '名字', value: S.me.name }], async (v) => { await api('/api/me', { method: 'PUT', json: v }); await refresh(); });
   $('#pw').onclick = () => formDialog('改密码', [{ name: 'old', label: '旧密码', type: 'password' }, { name: 'pw', label: '新密码（至少 6 位）', type: 'password' }], async (v) => { await api('/api/me/password', { json: v }); toast('密码已修改'); });
   if ($('#sw')) $('#sw').onclick = () => { location.href = 'https://localhost/index.html?reset=1'; };
+  if ($('#rv')) $('#rv').onclick = () => openReview('');
   $('#lo').onclick = async () => { await api('/api/logout', { method: 'POST' }); S.me = null; location.hash = '#/login'; route(); };
   if (!admin) return;
   const kf = (k = {}) => [{ name: 'name', label: '名字', value: k.name }, { name: 'birthday', label: '生日（用来显示几岁几个月）', type: 'date', value: k.birthday }, { name: 'emoji', label: '头像表情（一个 emoji）', value: k.emoji || '🌸' }];

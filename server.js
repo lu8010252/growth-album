@@ -442,14 +442,15 @@ function capsuleFields(b, f) {
   return r;
 }
 function filterPosts(req) {
-  const { kid, type, q, cat, member } = req.query;
+  const { kid, type, q, cat, member, media } = req.query;
   let list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p));   // 胶囊有自己的页面
   if (type) list = list.filter((p) => p.type === type);
   if (cat && CATS.includes(cat)) list = list.filter((p) => catOfPost(p) === cat);
   if (kid === 'together') list = list.filter((p) => p.kidIds.length >= 2);   // 双宝日常：两个以上孩子同框
-  else if (kid) list = list.filter((p) => p.kidIds.includes(kid));
+  else if (kid) { const ids = String(kid).split(',').filter(Boolean); list = list.filter((p) => ids.every((id) => p.kidIds.includes(id))); }   // 多个孩子＝都在场（同框）
+  if (['image', 'video', 'audio'].includes(media)) list = list.filter((p) => p.media.some((m) => m.kind === media));   // 只看带图片/视频/音频的
   if (member) list = list.filter((p) => (p.memberIds || []).includes(member));   // 家人出镜；和 kid 同时给＝两人同框
-  if (q) { const s = String(q).toLowerCase(); list = list.filter((p) => (p.title + ' ' + p.body).toLowerCase().includes(s)); }
+  if (q) { const s = String(q).toLowerCase(); list = list.filter((p) => (p.title + ' ' + p.body + ' ' + p.media.map((m) => m.name).join(' ')).toLowerCase().includes(s)); }
   return list;
 }
 // 每个月有几条（同样的筛选条件），给首页「快速跳转」用；要放在 /api/posts/:id 前面
