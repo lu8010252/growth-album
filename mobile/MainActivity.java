@@ -6,6 +6,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.webkit.CookieManager;
+import android.webkit.WebView;
+import androidx.activity.OnBackPressedCallback;
 import android.webkit.URLUtil;
 import android.widget.Toast;
 
@@ -17,6 +19,18 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    // 返回键：交给网页自己处理（先关大图、再回上一页并保留位置）；网页说“没有可返回的”才退出 App
+    getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+      @Override
+      public void handleOnBackPressed() {
+        final WebView wv = getBridge().getWebView();
+        wv.evaluateJavascript("(function(){try{return window.__appBack?window.__appBack():false}catch(e){return false}})()", v -> {
+          if ("true".equals(v)) return;
+          setEnabled(false);
+          getOnBackPressedDispatcher().onBackPressed();
+        });
+      }
+    });
     getBridge().getWebView().setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
       try {
         String name = URLUtil.guessFileName(url, contentDisposition, mimeType);

@@ -239,7 +239,7 @@ function filterHref(kid, cat, mem) { const a = [kid ? 'kid=' + kid : '', cat ? '
 function memChipsHtml(filter) {
   if (!(S.members || []).length) return '';
   const href = (m) => filterHref(filter.kid, filter.cat, m);
-  return `<div class="chips whochips"><span class="lbl">👪 谁出镜</span><a class="chip ${filter.member ? '' : 'on'}" href="${href('')}">不限</a>` + S.members.map((m) => `<a class="chip ${filter.member === m.id ? 'on' : ''}" href="${href(m.id)}">${esc(m.emoji)} ${esc(m.name)}</a>`).join('') + '</div>';
+  return `<div class="chips cats"><a class="chip ${filter.member ? '' : 'on'}" href="${href('')}">全部家人</a>` + S.members.map((m) => `<a class="chip ${filter.member === m.id ? 'on' : ''}" href="${href(m.id)}">${esc(m.emoji)} ${esc(m.name)}</a>`).join('') + '</div>';
 }
 function catChipsHtml(kid, cat, mem) {
   return `<a class="chip ${cat ? '' : 'on'}" href="${filterHref(kid, '', mem)}">全部分类</a>` + CATS.map(([id, ic, n]) => `<a class="chip ${cat === id ? 'on' : ''}" href="${filterHref(kid, id, mem)}">${ic} ${n}</a>`).join('');
@@ -844,5 +844,13 @@ async function boot() {
   S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai; S.who = !!d.who; S.members = d.members || [];
 }
 window.addEventListener('hashchange', route);
+// 给安卓 App 的返回键用：返回 true 表示网页已处理；false 表示已在首页，可以退出
+window.__appBack = () => {
+  if (!$('#lb').hidden) { closeLB(); return true; }
+  const h = location.hash;
+  if (!h || h === '#' || h === '#/') return false;
+  if (history.state && history.state.i > 1) history.back(); else location.replace('#/');
+  return true;
+};
 boot().then(route).catch((e) => ($('#view').innerHTML = `<div class="empty">无法连接服务器：${esc(e.message)}</div>`));
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

@@ -188,6 +188,4 @@ dialog{max-height:90vh;overflow:auto}
 
 /* 家人出镜：和其他标签/筛选保持同样大小（类名别叫 mem，会和「那年今日」卡片 .mem 冲突） */
 .tag.who{background:var(--card);color:var(--ink);border:1px solid var(--c)}
-.chips.whochips{align-items:center}
-.chips.whochips .lbl{flex:none;font-size:13px;color:var(--muted,#8a7f78);padding-right:2px}
 .wholine{font-size:14px;margin:8px 0 4px;line-height:1.6}
