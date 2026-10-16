@@ -185,3 +185,11 @@ details.more summary{cursor:pointer;font-size:13px;color:var(--muted)}
 .qa .age{flex:none;color:#fff;border-radius:999px;padding:0 10px;font-size:12px;line-height:24px;margin-top:2px}
 .qa span:last-child{white-space:pre-wrap;word-break:break-word}
 dialog{max-height:90vh;overflow:auto}
+
+/* 家人出镜：字号做大，老人也看得清 */
+.tag.mem{background:#fff;color:var(--ink);border:2px solid var(--c);font-size:15px;font-weight:600;line-height:24px;padding:0 12px}
+.chips.mem{align-items:center}
+.chips.mem .lbl{flex:none;font-size:16px;font-weight:600;padding-right:2px}
+.chips.mem .chip{font-size:17px;padding:8px 18px;border-width:2px}
+.sel.big span{font-size:18px;padding:9px 20px;border-width:2px}
+.wholine{font-size:19px;font-weight:600;margin:10px 0 4px;line-height:1.6}

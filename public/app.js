@@ -30,6 +30,7 @@ async function api(url, opt = {}) {
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2200); }
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const kidOf = (id) => S.kids.find((k) => k.id === id);
+const memberOf = (id) => (S.members || []).find((m) => m.id === id);
 // 精准年龄：9岁2个月15天（不满月显示「出生第N天」）
 function ageText(b, d) {
   if (!b) return '';
@@ -60,21 +61,22 @@ const dateText = (d) => { const x = new Date(d + 'T00:00:00'); return `${x.getMo
 const monthText = (d) => `${d.slice(0, 4)}年${+d.slice(5, 7)}月`;
 const sizeText = (n) => (n > 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' : n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.ceil(n / 1024) + ' KB');
 function kidTags(p) {
-  const ks = p.kidIds.map(kidOf).filter(Boolean);
-  if (!ks.length) return p.type === 'diary' ? '' : '<span class="tag" style="background:#8c7b72">🏠 全家</span>';
-  return ks.map((k) => `<span class="tag" style="background:${k.color}">${esc(k.emoji)} ${esc(k.name)}${k.birthday ? ' · ' + ageText(k.birthday, p.date) : ''}</span>`).join('');
+  const ks = p.kidIds.map(kidOf).filter(Boolean), ms = (p.memberIds || []).map(memberOf).filter(Boolean);
+  const mt = ms.map((m) => `<span class="tag mem" style="--c:${m.color}">${esc(m.emoji)} ${esc(m.name)}</span>`).join('');
+  if (!ks.length) return (p.type === 'diary' ? '' : '<span class="tag" style="background:#8c7b72">🏠 全家</span>') + mt;
+  return ks.map((k) => `<span class="tag" style="background:${k.color}">${esc(k.emoji)} ${esc(k.name)}${k.birthday ? ' · ' + ageText(k.birthday, p.date) : ''}</span>`).join('') + mt;
 }
 
 /* ---------- 弹窗表单 ---------- */
 /* 孩子的参考照片：给「识别是谁」对照用，每人最多 5 张 */
-function refsDialog(kidId) {
+function refsDialog(kind, kidId) { // kind: 'kids' | 'members'
   const d = document.createElement('dialog'); document.body.appendChild(d); d.showModal();
   d.addEventListener('close', () => d.remove());
   const reload = () => boot().then(viewMe);
   const draw = () => {
-    const k = kidOf(kidId); if (!k) return d.close(); const refs = k.refs || [];
+    const k = (kind === 'kids' ? kidOf : memberOf)(kidId); if (!k) return d.close(); const refs = k.refs || [];
     d.innerHTML = `<div class="dlg"><h3>📷 ${esc(k.name)} 的参考照片</h3><p class="note">传 2~5 张清楚的正脸照（最好是不同年龄、没戴帽子口罩的）。点「识别是谁」时，AI 会拿这些小图对照着认；只有这里的小图和你选的照片会发给 AI。</p>
-      <div class="previews">${refs.map((id) => `<div class="pv"><img src="/api/kids/${k.id}/refs/${id}" alt=""><button type="button" data-r="${id}">✕</button></div>`).join('')}</div>
+      <div class="previews">${refs.map((id) => `<div class="pv"><img src="/api/${kind}/${k.id}/refs/${id}" alt=""><button type="button" data-r="${id}">✕</button></div>`).join('')}</div>
       <input type="file" id="rf" accept="image/*" multiple hidden><p class="err" hidden></p>
       <div class="row sp"><button type="button" class="btn ghost" data-x>关闭</button><button type="button" class="btn" id="radd" ${refs.length >= 5 ? 'disabled' : ''}>＋ 添加照片（${refs.length}/5）</button></div></div>`;
     const err = $('.err', d), fail = (m) => { err.textContent = m; err.hidden = false; };
@@ -83,10 +85,10 @@ function refsDialog(kidId) {
     $('#rf', d).onchange = async (e) => {
       const fs = [...e.target.files].slice(0, 5 - refs.length); if (!fs.length) return;
       $('#radd', d).disabled = true; $('#radd', d).textContent = '上传中…';
-      try { const fd = new FormData(); fs.forEach((f) => fd.append('files', f)); const r = await xhrSend(`/api/kids/${k.id}/refs`, 'POST', fd, () => {}); await reload(); draw(); if (r.bad) fail(`有 ${r.bad} 张格式不支持，没传上`); }
+      try { const fd = new FormData(); fs.forEach((f) => fd.append('files', f)); const r = await xhrSend(`/api/${kind}/${k.id}/refs`, 'POST', fd, () => {}); await reload(); draw(); if (r.bad) fail(`有 ${r.bad} 张格式不支持，没传上`); }
       catch (x) { draw(); fail(x.message); }
     };
-    d.querySelectorAll('[data-r]').forEach((b) => (b.onclick = async () => { try { await api(`/api/kids/${k.id}/refs/${b.dataset.r}`, { method: 'DELETE' }); await reload(); draw(); } catch (x) { fail(x.message); } }));
+    d.querySelectorAll('[data-r]').forEach((b) => (b.onclick = async () => { try { await api(`/api/${kind}/${k.id}/refs/${b.dataset.r}`, { method: 'DELETE' }); await reload(); draw(); } catch (x) { fail(x.message); } }));
   };
   draw();
 }
@@ -229,9 +231,15 @@ function heroHtml() {
   return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}</div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>` : ''}</section>`;
 }
 // 筛选条：孩子 + 分类，两者可以叠加
-function filterHref(kid, cat) { const a = [kid ? 'kid=' + kid : '', cat ? 'cat=' + cat : ''].filter(Boolean).join('&'); return '#/' + (a ? '?' + a : ''); }
-function catChipsHtml(kid, cat) {
-  return `<a class="chip ${cat ? '' : 'on'}" href="${filterHref(kid, '')}">全部分类</a>` + CATS.map(([id, ic, n]) => `<a class="chip ${cat === id ? 'on' : ''}" href="${filterHref(kid, id)}">${ic} ${n}</a>`).join('');
+function filterHref(kid, cat, mem) { const a = [kid ? 'kid=' + kid : '', cat ? 'cat=' + cat : '', mem ? 'member=' + mem : ''].filter(Boolean).join('&'); return '#/' + (a ? '?' + a : ''); }
+// 家人出镜筛选：和上面的孩子筛选叠加＝「爸爸 + 大宝」同框；字号做大，老人也看得清
+function memChipsHtml(filter) {
+  if (!(S.members || []).length) return '';
+  const href = (m) => filterHref(filter.kid, filter.cat, m);
+  return `<div class="chips mem"><span class="lbl">👪 谁出镜</span><a class="chip ${filter.member ? '' : 'on'}" href="${href('')}">不限</a>` + S.members.map((m) => `<a class="chip ${filter.member === m.id ? 'on' : ''}" href="${href(m.id)}">${esc(m.emoji)} ${esc(m.name)}</a>`).join('') + '</div>';
+}
+function catChipsHtml(kid, cat, mem) {
+  return `<a class="chip ${cat ? '' : 'on'}" href="${filterHref(kid, '', mem)}">全部分类</a>` + CATS.map(([id, ic, n]) => `<a class="chip ${cat === id ? 'on' : ''}" href="${filterHref(kid, id, mem)}">${ic} ${n}</a>`).join('');
 }
 async function loadOnThisDay() {
   const box = $('#otd'); if (!box) return;
@@ -250,19 +258,19 @@ async function loadOnThisDay() {
   }).join('');
 }
 async function viewTimeline(mode, qs) {
-  const filter = { kid: qs.get('kid') || '', q: qs.get('q') || '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '' };
+  const filter = { kid: qs.get('kid') || '', member: (S.members || []).some((m) => m.id === qs.get('member')) ? qs.get('member') : '', q: qs.get('q') || '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '' };
   const type = mode === 'diary' ? 'diary' : '';
-  const plain = mode === 'home' && !filter.kid && !filter.cat;
-  const chips = mode === 'diary' ? '' : `<div class="chips">${kidChipsHtml('#/', filter.kid, true, filter.cat ? 'cat=' + filter.cat : '')}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div><div class="chips cats">${catChipsHtml(filter.kid, filter.cat)}</div>`;
+  const plain = mode === 'home' && !filter.kid && !filter.cat && !filter.member;
+  const chips = mode === 'diary' ? '' : `<div class="chips">${kidChipsHtml('#/', filter.kid, true, [filter.cat ? 'cat=' + filter.cat : '', filter.member ? 'member=' + filter.member : ''].filter(Boolean).join('&'))}${S.ai && ['admin', 'member'].includes(S.me.role) ? '<a class="chip ai" id="rv">✨ 成长回顾</a>' : ''}</div>${memChipsHtml(filter)}<div class="chips cats">${catChipsHtml(filter.kid, filter.cat, filter.member)}</div>`;
   $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml() + '<div id="otd"></div>' : ''}${chips}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
   if (mode === 'home') loadOnThisDay();
   if ($('#rv')) $('#rv').onclick = () => openReview(filter.kid);
   let offset = 0, last = '', total = 0;
   const tl = $('#tl');
   async function load() {
-    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}`;
+    const u = `/api/posts?limit=15&offset=${offset}${type ? '&type=' + type : ''}${filter.kid ? '&kid=' + filter.kid : ''}${filter.cat ? '&cat=' + filter.cat : ''}${filter.member ? '&member=' + filter.member : ''}${filter.q ? '&q=' + encodeURIComponent(filter.q) : ''}`;
     const d = await api(u); total = d.total;
-    if (mode === 'home' && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `筛选出 ${total} 个瞬间`;
+    if (mode === 'home' && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `${[filter.kid && (kidOf(filter.kid) || {}).name, filter.member && (memberOf(filter.member) || {}).name].filter(Boolean).join(' 和 ')}${filter.kid && filter.member ? ' 同框' : ''}${filter.kid === 'together' ? '双宝日常' : ''}：共 ${total} 个瞬间`;
     let h = '';
     for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span>${m}</span></div>`; } h += cardHtml(p, true); }
     tl.insertAdjacentHTML('beforeend', h); offset += d.items.length;
@@ -282,6 +290,7 @@ function commentsHtml(p) {
     <span class="acts"><a data-re="${c.id}" data-n="${esc(c.name)}">回复</a>${c.mine || p.authorId === S.me.id || S.me.role === 'admin' ? `<a data-c="${c.id}">删除</a>` : ''}</span><br>${c.replyToName ? `<span class="to">回复 ${esc(c.replyToName)}：</span>` : ''}${esc(c.text)}</div>`;
   return top.map((c) => one(c, false) + p.comments.filter((r) => r.parentId === c.id).map((r) => one(r, true)).join('')).join('');
 }
+const whoLine = (p) => { const ms = (p.memberIds || []).map(memberOf).filter(Boolean); return ms.length ? `<p class="wholine">👪 出镜：${ms.map((m) => `${esc(m.emoji)} ${esc(m.name)}`).join('　')}</p>` : ''; };
 function viewLocked(p) {
   const ks = p.kidIds.map(kidOf).filter(Boolean).map((k) => k.name).join('、'), n = daysUntil(p.unlockDate);
   $('#view').innerHTML = `<div class="panel post"><div class="meta"><a href="javascript:history.back()">‹ 返回</a></div><div class="lockbox"><div class="big">🔒</div><h2>一封时间胶囊</h2>
@@ -301,7 +310,7 @@ async function viewPost(id, keepY) {
   const bk = (p.kidIds.length ? p.kidIds.map(kidOf).filter((k) => k && k.birthday) : S.kids.filter((k) => k.birthday));
   const others = people.filter((u) => u.id !== S.me.id);
   $('#view').innerHTML = `<div class="panel post"><div class="meta"><a href="javascript:history.back()">‹ 返回</a><span>${dateText(p.date)}</span>${kidTags(p)}${catTag(p)}${typeLabel(p)}</div>
-  ${p.title ? `<h2>${esc(p.title)}</h2>` : ''}<div class="note">${esc(p.authorName)} 记录于 ${p.createdAt.slice(0, 10)}${p.ai ? ' · ✨ AI 整理，内容请以家人记忆为准' : ''}</div>
+  ${p.title ? `<h2>${esc(p.title)}</h2>` : ''}<div class="note">${esc(p.authorName)} 记录于 ${p.createdAt.slice(0, 10)}${p.ai ? ' · ✨ AI 整理，内容请以家人记忆为准' : ''}</div>${whoLine(p)}
   ${p.body ? `<div class="body">${esc(p.body)}</div>` : ''}<div class="media">${media}</div>
   <div class="row" style="margin-top:14px"><button class="btn ghost sm" id="like">${p.liked ? '❤️' : '🤍'} ${p.likeCount || '喜欢'}</button>
   ${p.canEdit ? `<a class="btn ghost sm" href="#/edit/${p.id}">编辑</a>` : ''}${p.canDelete ? '<button class="btn danger sm" id="del">删除</button>' : ''}</div></div>
@@ -420,14 +429,16 @@ async function viewCompose(id, qs) {
   const post = id ? await api('/api/posts/' + id) : null;
   const type = post ? post.type : (['diary', 'capsule'].includes(qs.get('type')) ? qs.get('type') : 'record');
   const cap = type === 'capsule', fresh = cap && !post;
-  const selKids = new Set(post ? post.kidIds : []);
+  const selKids = new Set(post ? post.kidIds : []), selMems = new Set(post ? post.memberIds || [] : []);
   let files = []; const removed = new Set();
   const kidSel = `<div class="sel">${S.kids.map((k) => `<label><input type="checkbox" name="kid" value="${k.id}" ${selKids.has(k.id) ? 'checked' : ''}><span>${esc(k.emoji)} ${esc(k.name)}</span></label>`).join('')}</div>`;
+  const memSel = (S.members || []).length && type !== 'capsule' ? `<div class="field"><span>出镜的家人（可多选，没有就不选）</span><div class="sel big">${S.members.map((m) => `<label><input type="checkbox" name="member" value="${m.id}" ${selMems.has(m.id) ? 'checked' : ''}><span>${esc(m.emoji)} ${esc(m.name)}</span></label>`).join('')}</div></div>` : '';
   const names = { record: '成长记录', diary: '日记', capsule: '写给未来的信' };
   const typeSw = post ? '' : `<div class="chips" style="padding:8px 0 0">${Object.entries(names).map(([t, n]) => `<a class="chip ${t === type ? 'on' : ''}" href="#/new${t === 'record' ? '' : '?type=' + t}">${n}</a>`).join('')}</div>`;
   const visOpts = type === 'diary' ? [['private', '🔒 只有我自己'], ['family', '👨‍👩‍👧 家人都能看']] : [['private', '🎁 只给收信的孩子（和我自己）'], ['family', '👨‍👩‍👧 开启后家人都能看']];
   $('#view').innerHTML = `<form class="panel" id="cf"><h3 style="margin:0">${post ? '编辑' : '新'}${names[type]}</h3>${typeSw}
     <div class="field"><span>${cap ? '写给谁（可多选；按「满几岁」解锁时以第一个为准）' : type === 'diary' ? '关于谁（可不选）' : '是谁的记录（不选＝全家；选两个＝双宝日常）'}</span>${kidSel}</div>
+    ${memSel}
     ${type === 'record' ? `<div class="field"><span>分类</span><div class="sel">${CATS.map(([id, ic, n]) => `<label><input type="radio" name="category" value="${id}" ${(post ? post.category || 'daily' : CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : 'daily') === id ? 'checked' : ''}><span>${ic} ${n}</span></label>`).join('')}</div></div>` : ''}
     ${cap ? '' : `<label class="field"><span>日期（这件事发生的那天）</span><input type="date" name="date" value="${post ? post.date : today()}" max="2100-01-01" required></label><p class="note" id="dn" hidden></p>`}
     ${fresh ? `<div class="field"><span>什么时候开启</span><div class="row"><select name="unlockMode" id="um"><option value="date">指定日期</option><option value="age">孩子满几岁那天</option></select><input type="date" name="unlockDate" id="ud" min="${addYears(today(), 0)}"><span id="ua" hidden><input type="text" inputmode="numeric" name="unlockAge" id="uai" placeholder="18" maxlength="2" style="width:64px"> 岁</span></div><p class="note" id="uh"></p></div>
@@ -499,8 +510,10 @@ async function viewCompose(id, qs) {
       if (n <= 0) throw new Error('这些照片浏览器读不了（比如 HEIC），识别不了');
       const r = await xhrSend('/api/ai/who', 'POST', fd, () => {});
       const hit = (r.kidIds || []).map((id) => form.querySelector(`[name=kid][value="${id}"]`)).filter(Boolean);
-      hit.forEach((c) => (c.checked = true));
-      toast(hit.length ? `认出了：${hit.map((c) => kidOf(c.value).name).join('、')}，已帮你选上（不对请手动改）` : '没认出是谁，可能脸不清楚，请手动选');
+      const mhit = (r.memberIds || []).map((id) => form.querySelector(`[name=member][value="${id}"]`)).filter(Boolean);
+      hit.forEach((c) => (c.checked = true)); mhit.forEach((c) => (c.checked = true));
+      const nm = [...hit.map((c) => kidOf(c.value).name), ...mhit.map((c) => memberOf(c.value).name)];
+      toast(nm.length ? `认出了：${nm.join('、')}，已帮你选上（不对请手动改）` : '没认出是谁，可能脸不清楚，请手动选');
     } catch (x) { toast(x.message); } finally { btn.disabled = false; btn.textContent = old; }
   };
   // 录音：直接在页面里录，存成一段语音（需要 HTTPS 访问才有麦克风权限）
@@ -524,7 +537,7 @@ async function viewCompose(id, qs) {
     e.preventDefault(); const err = $('.err'); err.hidden = true;
     if (activeRec) { err.textContent = '还在录音，先点「停止并保存」'; err.hidden = false; return; }
     const v = Object.fromEntries(new FormData(e.target));
-    const kidIds = [...e.target.querySelectorAll('[name=kid]:checked')].map((c) => c.value);
+    const kidIds = [...e.target.querySelectorAll('[name=kid]:checked')].map((c) => c.value), memberIds = [...e.target.querySelectorAll('[name=member]:checked')].map((c) => c.value);
     if (!v.title.trim() && !v.body.trim() && !files.length && !(post && post.media.length - removed.size)) { err.textContent = '写点文字或选张照片吧'; err.hidden = false; return; }
     if (fresh && !confirmBox('封存后连你自己也看不到内容，直到开启那天。确定封存吗？')) return;
     $('#ok').disabled = true; const bar = $('#bar'); bar.hidden = false;
@@ -534,10 +547,10 @@ async function viewCompose(id, qs) {
       if (!post) {
         const fd = new FormData(); fd.append('type', type);
         ['date', 'title', 'body', 'visibility', 'category', 'unlockMode', 'unlockDate', 'unlockAge'].forEach((k) => v[k] !== undefined && fd.append(k, v[k]));
-        fd.append('kidIds', kidIds.join(',')); files.forEach((f) => fd.append('files', f));
+        fd.append('kidIds', kidIds.join(',')); fd.append('memberIds', memberIds.join(',')); files.forEach((f) => fd.append('files', f));
         res = await xhrSend('/api/posts', 'POST', fd, prog);
       } else {
-        res = await api('/api/posts/' + id, { method: 'PUT', json: { ...v, kidIds, removeMedia: [...removed] } });
+        res = await api('/api/posts/' + id, { method: 'PUT', json: { ...v, kidIds, memberIds, removeMedia: [...removed] } });
         if (files.length) { const fd = new FormData(); files.forEach((f) => fd.append('files', f)); res = await xhrSend(`/api/posts/${id}/media`, 'POST', fd, prog); }
       }
       toast(cap && !post ? '已封存 ✉️' : '已保存'); location.hash = cap && !post ? '#/capsule' : '#/post/' + res.id;
@@ -708,6 +721,9 @@ async function viewMe() {
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
     ${S.kids.map((k) => `<div class="item"><div>${esc(k.emoji)} <b>${esc(k.name)}</b><small>${k.birthday ? '生日 ' + k.birthday + ' · 现在 ' + ageText(k.birthday, today()) : '未填生日'}</small></div><div class="row"><button class="btn ghost sm" data-rk="${k.id}">📷 参考照 ${(k.refs || []).length}</button><button class="btn ghost sm" data-ek="${k.id}">编辑</button><button class="btn danger sm" data-dk="${k.id}">删除</button></div></div>`).join('') || '<p class="note">还没添加孩子</p>'}</div>
+  <div class="panel"><div class="row sp"><h3 style="margin:0">👪 家人出镜</h3><button class="btn sm" id="am">添加</button></div>
+    <p class="note" style="margin:6px 0 4px">爸爸、妈妈、爷爷奶奶……想加几位都行。发布时可以标记谁出镜，时间线能按「爸爸 + 大宝」这样筛选；给他们传几张参考照，还能自动认出来。</p>
+    ${(S.members || []).map((m) => `<div class="item"><div>${esc(m.emoji)} <b>${esc(m.name)}</b></div><div class="row"><button class="btn ghost sm" data-rm="${m.id}">📷 参考照 ${(m.refs || []).length}</button><button class="btn ghost sm" data-em="${m.id}">改名</button><button class="btn danger sm" data-dm="${m.id}">删除</button></div></div>`).join('') || '<p class="note">还没有添加家人</p>'}</div>
   <div class="panel"><div class="row sp"><h3 style="margin:0">👨‍👩‍👧 家人账号</h3><button class="btn sm" id="au">添加</button></div>
     ${users.map((u) => `<div class="item"><div><b>${esc(u.name)}</b><small>${esc(u.username)} · ${ROLE_NAME[u.role]}${u.kidId && kidOf(u.kidId) ? ' · ' + esc(kidOf(u.kidId).name) : ''}</small></div><div class="row"><button class="btn ghost sm" data-eu="${u.id}">编辑</button>${u.id !== S.me.id ? `<button class="btn danger sm" data-du="${u.id}">删除</button>` : ''}</div></div>`).join('')}
     <p class="note">孩子账号写的日记默认私密，管理员也看不到，除非她自己选择「家人都能看」。</p></div>
@@ -746,7 +762,12 @@ async function viewMe() {
   const kf = (k = {}) => [{ name: 'name', label: '名字', value: k.name }, { name: 'birthday', label: '生日（用来显示几岁几个月）', type: 'date', value: k.birthday }, { name: 'emoji', label: '头像表情（一个 emoji）', value: k.emoji || '🌸' }];
   $('#ak').onclick = () => formDialog('添加孩子', kf(), async (v) => { await api('/api/kids', { json: v }); await refresh(); });
   $('#view').querySelectorAll('[data-ek]').forEach((b) => (b.onclick = () => formDialog('编辑孩子', kf(kidOf(b.dataset.ek)), async (v) => { await api('/api/kids/' + b.dataset.ek, { method: 'PUT', json: v }); await refresh(); })));
-  $('#view').querySelectorAll('[data-rk]').forEach((b) => (b.onclick = () => refsDialog(b.dataset.rk)));
+  const mf = (m = {}) => [{ name: 'name', label: '称呼（如：爸爸、奶奶）', value: m.name }, { name: 'emoji', label: '头像表情（一个 emoji）', value: m.emoji || '👤' }];
+  $('#am').onclick = () => formDialog('添加家人', mf(), async (v) => { await api('/api/members', { json: v }); await refresh(); });
+  $('#view').querySelectorAll('[data-em]').forEach((b) => (b.onclick = () => formDialog('修改家人', mf(memberOf(b.dataset.em)), async (v) => { await api('/api/members/' + b.dataset.em, { method: 'PUT', json: v }); await refresh(); })));
+  $('#view').querySelectorAll('[data-dm]').forEach((b) => (b.onclick = async () => { if (confirmBox('删除这位家人？已有记录会保留，只是不再标记 TA 出镜。')) { await api('/api/members/' + b.dataset.dm, { method: 'DELETE' }); await refresh(); } }));
+  $('#view').querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => refsDialog('members', b.dataset.rm)));
+  $('#view').querySelectorAll('[data-rk]').forEach((b) => (b.onclick = () => refsDialog('kids', b.dataset.rk)));
   $('#view').querySelectorAll('[data-dk]').forEach((b) => (b.onclick = async () => { if (confirmBox('删除这个孩子？已有的记录会保留，只是不再标记是谁的。')) { await api('/api/kids/' + b.dataset.dk, { method: 'DELETE' }); await refresh(); } }));
   const kidOpts = [['', '（不关联）'], ...S.kids.map((k) => [k.id, k.name])];
   const roleOpts = Object.entries(ROLE_NAME);
@@ -803,7 +824,7 @@ async function route() {
 }
 async function boot() {
   const d = await api('/api/init');
-  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai; S.who = !!d.who;
+  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai; S.who = !!d.who; S.members = d.members || [];
 }
 window.addEventListener('hashchange', route);
 boot().then(route).catch((e) => ($('#view').innerHTML = `<div class="empty">无法连接服务器：${esc(e.message)}</div>`));

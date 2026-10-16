@@ -27,6 +27,7 @@ function writeJSON(f, obj) {
 }
 const F_USERS = path.join(DATA, 'users.json');
 const F_KIDS = path.join(DATA, 'kids.json');
+const F_MEMBERS = path.join(DATA, 'members.json');
 const F_SET = path.join(DATA, 'settings.json');
 const F_SECRET = path.join(DATA, 'secret.key');
 const F_AI = path.join(DATA, 'ai.json');
@@ -38,6 +39,7 @@ const aiReady = () => !!(aiCfg.baseUrl && aiCfg.apiKey && aiCfg.model);
 
 let users = readJSON(F_USERS, []);
 let kids = readJSON(F_KIDS, []);
+let members = readJSON(F_MEMBERS, []); // 家人（爸爸、妈妈、爷爷奶奶……）：可自由添加，用于标记谁出镜，也能用参考照识别
 let settings = readJSON(F_SET, { title: '成长册' });
 let growth = readJSON(F_GROWTH, []); // 成长数据：{id,kidId,date,height,weight,shoe,note,by}
 let qaRecs = readJSON(F_QA, []);     // 生日问答：{id,kidId,age,date,answers:[{q,a}],by}
@@ -47,6 +49,7 @@ let SECRET;
 try { SECRET = fs.readFileSync(F_SECRET, 'utf8').trim(); } catch { SECRET = rand(32); fs.writeFileSync(F_SECRET, SECRET, { mode: 0o600 }); }
 const saveUsers = () => writeJSON(F_USERS, users);
 const saveKids = () => writeJSON(F_KIDS, kids);
+const saveMembers = () => writeJSON(F_MEMBERS, members);
 const saveSettings = () => writeJSON(F_SET, settings);
 const saveGrowth = () => writeJSON(F_GROWTH, growth);
 const saveQa = () => writeJSON(F_QA, qaRecs);
@@ -125,6 +128,8 @@ function mediaOut(pid, m) {
   };
 }
 const kidById = (id) => kids.find((k) => k.id === id);
+const memberById = (id) => members.find((m) => m.id === id);
+const memberOut = (m) => ({ ...m, refs: (m.refs || []).map((r) => r.id) });
 const kidOut = (k) => ({ ...k, refs: (k.refs || []).map((r) => r.id) }); // 参考照片只给前端 id 列表
 /* 评论可见性：公开 / 悄悄话（仅管理员 · 指定的人 · 孩子满 18 岁后）。评论者本人永远看得到自己写的 */
 function canSeeComment(u, c) {
@@ -144,7 +149,7 @@ function whisperLabel(w, mine) {
 }
 function toClient(p, u) {
   const base = {
-    id: p.id, type: p.type, kidIds: p.kidIds, authorId: p.authorId, authorName: userName(p.authorId),
+    id: p.id, type: p.type, kidIds: p.kidIds, memberIds: p.memberIds || [], authorId: p.authorId, authorName: userName(p.authorId),
     date: p.date, visibility: p.visibility, createdAt: p.createdAt, ai: !!p.ai, category: catOfPost(p),
     canEdit: canEdit(u, p), canDelete: canDelete(u, p),
   };
@@ -260,7 +265,7 @@ const str = (v, n) => String(v ?? '').trim().slice(0, n);
 
 app.get('/api/init', (req, res) => {
   const me = readUser(req);
-  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids.map(kidOut) : [], settings: { title: settings.title }, ai: !!me && aiReady(), who: !!me && (aiReady() || !!aiCfg.faceUrl), qaQuestions: me ? qaQuestions() : [] });
+  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids.map(kidOut) : [], members: me ? members.map(memberOut) : [], settings: { title: settings.title }, ai: !!me && aiReady(), who: !!me && (aiReady() || !!aiCfg.faceUrl), qaQuestions: me ? qaQuestions() : [] });
 });
 app.post('/api/setup', (req, res) => {
   if (users.length) return res.status(403).json({ error: '已经初始化过了' });
@@ -313,34 +318,58 @@ const refUpload = multer({
   limits: { fileSize: 30 * 1024 * 1024, files: MAX_REFS },
   fileFilter: (req, file, cb) => cb(null, IMG_EXT.has(path.extname(file.originalname).toLowerCase())),
 });
-app.post('/api/kids/:id/refs', needAdmin, refUpload.array('files', MAX_REFS), async (req, res) => {
-  const files = req.files || [], k = kidById(req.params.id);
-  try {
-    if (!k) return res.status(404).json({ error: '没有这个孩子' });
-    k.refs = k.refs || [];
-    if (!files.length) return res.status(400).json({ error: '没有收到图片' });
-    if (k.refs.length >= MAX_REFS) return res.status(400).json({ error: `最多 ${MAX_REFS} 张，先删掉几张再加` });
-    const dir = path.join(REFS_DIR, k.id); fs.mkdirSync(dir, { recursive: true });
-    let bad = 0;
-    for (const f of files) {
-      if (k.refs.length >= MAX_REFS) break;
-      const id = rand(4), out = path.join(dir, id + '.jpg');
-      if (await ff(['-i', f.path, '-vf', "scale='min(512,iw)':-2", '-frames:v', '1', '-q:v', '4', out]) && exists(out)) k.refs.push({ id }); else bad++;
-    }
-    saveKids(); res.json({ ...kidOut(k), bad });
-  } catch (e) { console.error(e); res.status(500).json({ error: '保存失败：' + e.message }); }
-  finally { files.forEach((f) => fsp.rm(f.path, { force: true }).catch(() => {})); }
+function refRoutes(base, find, out, save) {
+  app.post(`/api/${base}/:id/refs`, needAdmin, refUpload.array('files', MAX_REFS), async (req, res) => {
+    const files = req.files || [], k = find(req.params.id);
+    try {
+      if (!k) return res.status(404).json({ error: '没有这个人' });
+      k.refs = k.refs || [];
+      if (!files.length) return res.status(400).json({ error: '没有收到图片' });
+      if (k.refs.length >= MAX_REFS) return res.status(400).json({ error: `最多 ${MAX_REFS} 张，先删掉几张再加` });
+      const dir = path.join(REFS_DIR, k.id); fs.mkdirSync(dir, { recursive: true });
+      let bad = 0;
+      for (const f of files) {
+        if (k.refs.length >= MAX_REFS) break;
+        const id = rand(4), o = path.join(dir, id + '.jpg');
+        if (await ff(['-i', f.path, '-vf', "scale='min(512,iw)':-2", '-frames:v', '1', '-q:v', '4', o]) && exists(o)) k.refs.push({ id }); else bad++;
+      }
+      save(); res.json({ ...out(k), bad });
+    } catch (e) { console.error(e); res.status(500).json({ error: '保存失败：' + e.message }); }
+    finally { files.forEach((f) => fsp.rm(f.path, { force: true }).catch(() => {})); }
+  });
+  app.get(`/api/${base}/:id/refs/:rid`, needLogin, (req, res) => {
+    const k = find(req.params.id), r = k && (k.refs || []).find((x) => x.id === req.params.rid);
+    if (!r) return res.status(404).end();
+    res.setHeader('Cache-Control', 'private, max-age=3600'); res.sendFile(path.join(REFS_DIR, k.id, r.id + '.jpg'));
+  });
+  app.delete(`/api/${base}/:id/refs/:rid`, needAdmin, (req, res) => {
+    const k = find(req.params.id); if (!k) return res.status(404).json({ error: '没有这个人' });
+    const r = (k.refs || []).find((x) => x.id === req.params.rid);
+    if (r) { k.refs = k.refs.filter((x) => x !== r); save(); fsp.rm(path.join(REFS_DIR, k.id, r.id + '.jpg'), { force: true }).catch(() => {}); }
+    res.json(out(k));
+  });
+}
+refRoutes('kids', kidById, kidOut, saveKids);
+refRoutes('members', memberById, memberOut, saveMembers);
+/* 家人（可自由添加：爸爸、妈妈、爷爷、奶奶……） */
+const MEMBER_COLORS = ['#5b7fa6', '#b5654f', '#6f9a72', '#9a7bb0', '#c08a3e', '#4f9aa6'];
+const memberFields = (b) => ({ name: str(b.name, 20), emoji: str(b.emoji, 4) || '👤' });
+app.post('/api/members', needAdmin, (req, res) => {
+  const f = memberFields(req.body); if (!f.name) return res.status(400).json({ error: '请填写称呼，比如：爸爸' });
+  if (members.length >= 30) return res.status(400).json({ error: '家人太多了，最多 30 位' });
+  const m = { id: 'f_' + rand(3), ...f, color: MEMBER_COLORS[members.length % MEMBER_COLORS.length] };
+  members.push(m); saveMembers(); res.json(memberOut(m));
 });
-app.get('/api/kids/:id/refs/:rid', needLogin, (req, res) => {
-  const k = kidById(req.params.id), r = k && (k.refs || []).find((x) => x.id === req.params.rid);
-  if (!r) return res.status(404).end();
-  res.setHeader('Cache-Control', 'private, max-age=3600'); res.sendFile(path.join(REFS_DIR, k.id, r.id + '.jpg'));
+app.put('/api/members/:id', needAdmin, (req, res) => {
+  const m = memberById(req.params.id); if (!m) return res.status(404).json({ error: '没有这位家人' });
+  const f = memberFields(req.body); if (!f.name) return res.status(400).json({ error: '请填写称呼' });
+  Object.assign(m, f); saveMembers(); res.json(memberOut(m));
 });
-app.delete('/api/kids/:id/refs/:rid', needAdmin, (req, res) => {
-  const k = kidById(req.params.id); if (!k) return res.status(404).json({ error: '没有这个孩子' });
-  const r = (k.refs || []).find((x) => x.id === req.params.rid);
-  if (r) { k.refs = k.refs.filter((x) => x !== r); saveKids(); fsp.rm(path.join(REFS_DIR, k.id, r.id + '.jpg'), { force: true }).catch(() => {}); }
-  res.json(kidOut(k));
+app.delete('/api/members/:id', needAdmin, (req, res) => {
+  members = members.filter((x) => x.id !== req.params.id); saveMembers();
+  fsp.rm(path.join(REFS_DIR, req.params.id), { recursive: true, force: true }).catch(() => {});
+  for (const p of posts.values()) if ((p.memberIds || []).includes(req.params.id)) { p.memberIds = p.memberIds.filter((x) => x !== req.params.id); savePost(p); }
+  res.json({ ok: true });
 });
 app.delete('/api/kids/:id', needAdmin, (req, res) => {
   kids = kids.filter((x) => x.id !== req.params.id); saveKids();
@@ -387,10 +416,12 @@ function postFields(b, u, old) {
   const has = (k) => b[k] !== undefined; // 修改时没传的字段保持原样，避免误清空
   const ids = Array.isArray(b.kidIds) ? b.kidIds : String(b.kidIds || '').split(',');
   const kidIds = has('kidIds') ? ids.filter((id) => kids.some((k) => k.id === id)) : (old ? old.kidIds : []);
+  const mids = Array.isArray(b.memberIds) ? b.memberIds : String(b.memberIds || '').split(',');
+  const memberIds = has('memberIds') ? mids.filter((id) => members.some((m) => m.id === id)) : (old ? old.memberIds || [] : []);
   const visibility = type === 'record' ? 'family' : has('visibility') ? (b.visibility === 'family' ? 'family' : 'private') : (old ? old.visibility : 'private');
   const category = type !== 'record' ? '' : has('category') ? (CATS.includes(b.category) ? b.category : 'daily') : (old && CATS.includes(old.category) ? old.category : 'daily');
   return {
-    type, date, kidIds, visibility, category,
+    type, date, kidIds, memberIds, visibility, category,
     title: has('title') ? str(b.title, 100) : (old ? old.title : ''),
     body: has('body') ? String(b.body || '').trim().slice(0, 50000) : (old ? old.body : ''),
   };
@@ -411,13 +442,14 @@ function capsuleFields(b, f) {
   return r;
 }
 app.get('/api/posts', needLogin, (req, res) => {
-  const { kid, type, q, cat } = req.query;
+  const { kid, type, q, cat, member } = req.query;
   const offset = Math.max(0, +req.query.offset || 0), limit = Math.min(50, +req.query.limit || 20);
   let list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p));   // 胶囊有自己的页面
   if (type) list = list.filter((p) => p.type === type);
   if (cat && CATS.includes(cat)) list = list.filter((p) => catOfPost(p) === cat);
   if (kid === 'together') list = list.filter((p) => p.kidIds.length >= 2);   // 双宝日常：两个以上孩子同框
   else if (kid) list = list.filter((p) => p.kidIds.includes(kid));
+  if (member) list = list.filter((p) => (p.memberIds || []).includes(member));   // 家人出镜；和 kid 同时给＝两人同框
   if (q) { const s = String(q).toLowerCase(); list = list.filter((p) => (p.title + ' ' + p.body).toLowerCase().includes(s)); }
   list.sort((a, b) => (a.date === b.date ? (a.createdAt < b.createdAt ? 1 : -1) : a.date < b.date ? 1 : -1));
   res.json({ total: list.length, items: list.slice(offset, offset + limit).map((p) => toClient(p, req.user)) });
@@ -638,11 +670,11 @@ app.get('/api/export', needLogin, async (req, res) => {
   list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt < b.createdAt ? -1 : 1));
   const today = new Date().toISOString().slice(0, 10);
   const archive = {
-    title: settings.title, exportedAt: today, forKid: kid ? kid.id : null, kids, questions: qaQuestions(),
+    title: settings.title, exportedAt: today, forKid: kid ? kid.id : null, kids: kids.map(({ refs, ...k }) => k), members: members.map(({ refs, ...m }) => m), questions: qaQuestions(),
     growth: growth.filter((g) => !kid || g.kidId === kid.id).sort((a, b) => (a.date < b.date ? -1 : 1)).map((g) => ({ kidId: g.kidId, date: g.date, height: g.height, weight: g.weight, shoe: g.shoe, note: g.note })),
     qa: qaRecs.filter((r) => !kid || r.kidId === kid.id).sort((a, b) => a.age - b.age).map((r) => ({ kidId: r.kidId, age: r.age, date: r.date, answers: r.answers })),
     posts: list.map((p) => ({
-      id: p.id, type: p.type, category: catOfPost(p), date: p.date, title: p.title, body: p.body, kidIds: p.kidIds, author: userName(p.authorId),
+      id: p.id, type: p.type, category: catOfPost(p), date: p.date, title: p.title, body: p.body, kidIds: p.kidIds, memberIds: p.memberIds || [], author: userName(p.authorId),
       unlockDate: p.type === 'capsule' ? p.unlockDate : undefined,
       comments: p.comments.filter((c) => canSeeComment(req.user, c)).map((c) => ({ name: c.nick || userName(c.userId), text: c.text, at: c.at, replyTo: c.replyToName || '', whisper: !!c.whisper })),
       media: p.media.map((m) => ({ kind: m.kind, name: m.name, file: `media/${p.id}/${m.file}`, poster: m.poster ? `media/${p.id}/${m.poster}` : null, web: m.web && m.status === 'ready' ? `media/${p.id}/${m.web}` : null })),
@@ -656,7 +688,7 @@ app.get('/api/export', needLogin, async (req, res) => {
   zip.append('用浏览器打开 index.html 就能离线翻看。\nmedia 文件夹里是原始照片和视频，posts 文件夹里是每一条记录的文字（Markdown）。\n', { name: '说明.txt' });
   zip.file(path.join(__dirname, 'export-viewer.html'), { name: 'index.html' });
   for (const p of list) {
-    const md = `# ${p.title || '(无标题)'}\n\n- ${p.type === 'capsule' ? '封存于' : '日期'}：${p.date}${p.type === 'capsule' ? '，' + p.unlockDate + ' 开启' : ''}\n- 作者：${userName(p.authorId)}\n- 关于：${p.kidIds.map((id) => (kids.find((k) => k.id === id) || {}).name).filter(Boolean).join('、') || '全家'}\n\n${p.body}\n\n` +
+    const md = `# ${p.title || '(无标题)'}\n\n- ${p.type === 'capsule' ? '封存于' : '日期'}：${p.date}${p.type === 'capsule' ? '，' + p.unlockDate + ' 开启' : ''}\n- 作者：${userName(p.authorId)}\n- 关于：${p.kidIds.map((id) => (kids.find((k) => k.id === id) || {}).name).filter(Boolean).join('、') || '全家'}${(p.memberIds || []).length ? '\n- 出镜：' + p.memberIds.map((id) => (memberById(id) || {}).name).filter(Boolean).join('、') : ''}\n\n${p.body}\n\n` +
       p.media.map((m) => (m.kind === 'audio' ? `[🎙 ${m.name}](../media/${p.id}/${m.file})` : `![${m.name}](../media/${p.id}/${m.file})`)).join('\n') + '\n' +
       (p.comments.length ? '\n## 评论\n' + p.comments.filter((c) => canSeeComment(req.user, c)).map((c) => `- ${c.whisper ? '🔒 ' : ''}${c.nick || userName(c.userId)}${c.replyToName ? ' 回复 ' + c.replyToName : ''}：${c.text}`).join('\n') + '\n' : '');
     zip.append(md, { name: `posts/${p.date}_${slug(p.title) || p.id}_${p.id.slice(-4)}.md` });
@@ -813,8 +845,8 @@ app.post('/api/ai/who', needWrite, (req, res, next) => (aiCfg.faceUrl || aiReady
   try {
     const imgs = (req.files || []).filter((f) => /^image\//.test(f.mimetype));
     if (!imgs.length) return res.status(400).json({ error: '没有收到可识别的照片' });
-    const cand = kids.filter((k) => (k.refs || []).length);
-    if (!cand.length) return res.status(400).json({ error: '还没有参考照片：「我的」页 → 孩子 → 📷 参考照片，每人传 2~5 张清楚的正脸照' });
+    const cand = [...kids.map((k) => ({ ...k, kind: 'kid' })), ...members.map((m) => ({ ...m, kind: 'member' }))].filter((k) => (k.refs || []).length);
+    if (!cand.length) return res.status(400).json({ error: '还没有参考照片：「我的」页 → 孩子 / 家人 → 📷 参考照，每人传 2~5 张清楚的正脸照' });
     const date = isDay(req.body.date) ? req.body.date : localDay();
     const refs = new Map(); for (const k of cand) refs.set(k.id, await refB64(k));
     const ageOf = (k) => (k.birthday ? ageText(k.birthday, date) : '');
@@ -825,7 +857,7 @@ app.post('/api/ai/who', needWrite, (req, res, next) => (aiCfg.faceUrl || aiReady
         r = await fetch(aiCfg.faceUrl, {
           method: 'POST', signal: AbortSignal.timeout(120e3),
           headers: { 'Content-Type': 'application/json', ...(aiCfg.faceKey ? { Authorization: 'Bearer ' + aiCfg.faceKey } : {}) },
-          body: JSON.stringify({ date, candidates: cand.map((k) => ({ id: k.id, name: k.name, birthday: k.birthday || '', age: ageOf(k), refs: refs.get(k.id) })), images: imgs.map((f) => f.buffer.toString('base64')) }),
+          body: JSON.stringify({ date, candidates: cand.map((k) => ({ id: k.id, kind: k.kind, name: k.name, birthday: k.birthday || '', age: ageOf(k), refs: refs.get(k.id) })), images: imgs.map((f) => f.buffer.toString('base64')) }),
         });
       } catch (e) { return res.status(502).json({ error: '连不上识别接口：' + (e.name === 'TimeoutError' ? '等太久超时了' : (e.cause && e.cause.code) || e.message) }); }
       const d = await r.json().catch(() => null);
@@ -835,14 +867,14 @@ app.post('/api/ai/who', needWrite, (req, res, next) => (aiCfg.faceUrl || aiReady
     } else {
       const parts = [{ type: 'text', text: '下面先给出每个孩子的参考照片，再给出待识别的照片。' }];
       for (const k of cand) {
-        parts.push({ type: 'text', text: `【${k.name}${ageOf(k) ? `（拍待识别照片那天约${ageOf(k)}）` : ''}的参考照片，共${refs.get(k.id).length}张】` });
+        parts.push({ type: 'text', text: `【${k.name}${k.kind === 'member' ? '（大人）' : ''}${ageOf(k) ? `（拍待识别照片那天约${ageOf(k)}）` : ''}的参考照片，共${refs.get(k.id).length}张】` });
         for (const b of refs.get(k.id)) parts.push({ type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + b } });
       }
       parts.push({ type: 'text', text: `【待识别的照片，共${imgs.length}张】` });
       imgs.forEach((f, i) => { parts.push({ type: 'text', text: `照片${i + 1}：` }); parts.push({ type: 'image_url', image_url: { url: `data:${f.mimetype};base64,` + f.buffer.toString('base64') } }); });
       const names = cand.map((k) => k.name).join('、');
-      const system = `你是家庭相册的人物识别助手。根据参考照片，判断每张待识别的照片里出现了哪几个孩子。可选的名字只有：${names}。` +
-        '规则：只能从这些名字里选；孩子会随年龄长大，请结合参考照片的脸型、五官和给出的年龄综合判断；姐妹之间可能长得像，没把握就不要选；照片里没有人脸、脸看不清、只有大人或别的孩子，names 就给空数组，不要猜。' +
+      const system = `你是家庭相册的人物识别助手。根据参考照片，判断每张待识别的照片里出现了哪几个人（孩子或大人）。可选的名字只有：${names}。` +
+        '规则：只能从这些名字里选；一张照片里可以有多人，请全部列出；孩子会随年龄长大，请结合参考照片的脸型、五官和给出的年龄综合判断；姐妹之间可能长得像，没把握就不要选；照片里没有人脸、脸看不清、只有大人或别的孩子，names 就给空数组，不要猜。' +
         '只输出 JSON：{"photos":[{"index":1,"names":["名字"]}]}，index 从 1 开始，每张待识别的照片都要有一项，不要输出任何其他内容。';
       let text;
       try { text = await aiChat([{ role: 'system', content: system }, { role: 'user', content: parts }], { temperature: 0, timeout: 180e3, model: aiCfg.visionModel || aiCfg.model }); }
@@ -855,7 +887,8 @@ app.post('/api/ai/who', needWrite, (req, res, next) => (aiCfg.faceUrl || aiReady
         return ((it && Array.isArray(it.names) ? it.names : []).map((n) => (cand.find((k) => k.name === String(n).trim()) || {}).id)).filter(Boolean);
       });
     }
-    res.json({ kidIds: [...new Set(photos.flat())], photos, count: imgs.length });
+    const all = [...new Set(photos.flat())];
+    res.json({ kidIds: all.filter((id) => kidById(id)), memberIds: all.filter((id) => memberById(id)), photos, count: imgs.length });
   } catch (e) { console.error(e); res.status(500).json({ error: '识别失败：' + e.message }); }
 });
 
