@@ -230,7 +230,8 @@ a.kp.on{border-color:var(--hero-ink);box-shadow:0 0 0 2px color-mix(in srgb,var(
 .pk small{position:absolute;left:0;right:0;bottom:0;background:#0008;color:#fff;font-size:10px;text-align:center;padding:1px 0}
 /* 首页/日记：筛选条（搜索、家人、分类）可以收起 */
 #fbox[hidden]{display:none}
-.ftog{margin:6px 2px}
+.ftg{float:right;font:600 13px/1 system-ui,sans-serif;padding:7px 12px;border-radius:999px;background:rgba(255,255,255,.28);cursor:pointer;white-space:nowrap}
+.ptitle .ftg{background:var(--soft);color:var(--muted)}
 
 /* 名字方框：不滑动，几个孩子平分一行，放大一点 */
 .kidsrow{overflow:visible;flex-wrap:wrap;scroll-snap-type:none}

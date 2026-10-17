@@ -260,7 +260,7 @@ function heroHtml(filter) {
   const sel = (filter && filter.kid && filter.kid !== 'together' ? filter.kid.split(',') : filter && filter.kid === 'together' ? S.kids.map((k) => k.id) : []);
   const tog = (id) => { const n = sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]; return filterHref(n.join(','), filter.cat, filter.member); };
   const kids = S.kids.map((k) => `<a class="kp ${sel.includes(k.id) ? 'on' : ''}" href="${tog(k.id)}"><i style="background:${k.color}">${esc(k.emoji)}</i><b>${esc(k.name)}</b>${k.birthday ? `<small>${ageText(k.birthday, today())}</small>` : ''}</a>`).join('');
-  return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}</div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>` : ''}</section>`;
+  return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}<a class="ftg" id="ft"></a></div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>` : ''}</section>`;
 }
 // 筛选条：孩子 + 分类，两者可以叠加
 let CUR_F = {};   // 当前时间线的搜索词和媒体类型，切换孩子/分类时带着走
@@ -349,13 +349,13 @@ async function viewTimeline(mode, qs) {
   CUR_F = filter;
   const plain = mode === 'home' && !filter.kid && !filter.cat && !filter.member && !filter.q && !filter.media;
   const chips = mode === 'diary' ? '' : `${memChipsHtml(filter)}<div class="chips cats">${catChipsHtml(filter.kid, filter.cat, filter.member)}</div>`;
-  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml(filter) + '<div id="otd"></div>' : ''}<div class="ftog"><a class="chip" id="ft"></a></div><div id="fbox">${searchHtml(filter)}${chips}</div>${jumpHtml(filter, mode)}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记<a class="ftg" id="ft"></a></h2>' : mode === 'home' ? heroHtml(filter) + '<div id="otd"></div>' : ''}<div id="fbox">${searchHtml(filter)}${chips}</div>${jumpHtml(filter, mode)}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
   if (mode === 'home') loadOnThisDay();
   // 筛选条（搜索 / 家人 / 分类）可以收起，记住选择；收起时若正在筛选会提示
   {
     const fb = $('#fbox'), ft = $('#ft'), act = !!(filter.q || filter.media || filter.cat || filter.member);
     const off = () => { try { return localStorage.getItem('filtersOff') === '1'; } catch { return false; } };
-    const sync = () => { fb.hidden = off(); ft.textContent = off() ? '🔎 展开筛选' + (act ? '（已筛选）' : '') : '🔼 收起筛选'; };
+    const sync = () => { fb.hidden = off(); ft.textContent = '🔎 筛选' + (off() ? (act ? ' ●' : ' ▾') : ' ▴'); };
     ft.onclick = () => { try { localStorage.setItem('filtersOff', off() ? '0' : '1'); } catch {} sync(); };
     sync();
   }
