@@ -239,3 +239,7 @@ a.kp.on{border-color:var(--hero-ink);box-shadow:0 0 0 2px color-mix(in srgb,var(
 .kp b{font-size:16px;white-space:normal}
 .kp small{font-size:12px;white-space:normal}
 .sel .chip{background:transparent}
+
+/* 隐藏页面自带的长滚动条（右边那条灰色长条）；页面照常可滚动，选日期的小滑条不受影响 */
+html,body{scrollbar-width:none;-ms-overflow-style:none}
+html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}
