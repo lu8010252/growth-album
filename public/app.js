@@ -312,16 +312,25 @@ function jumpHtml(f, mode) {
 }
 let SCR = null;
 window.addEventListener('scroll', () => { if (SCR) requestAnimationFrame(SCR); }, { passive: true });
+let SCRSEQ = 0;
+const scrubOff = () => { try { return localStorage.getItem('scrubOff') === '1'; } catch { return false; } };
 async function bindScrub(mode, filter) {
-  SCR = null;
+  SCR = null; const my = ++SCRSEQ;
+  document.querySelectorAll('.scrub, .sbtn').forEach((x) => x.remove());   // 先清掉旧的，避免两条叠在一起
   let ms = [];
   try { ms = await api('/api/posts/months?' + ['type=' + (mode === 'diary' ? 'diary' : ''), filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), filter.media && 'media=' + filter.media].filter(Boolean).join('&')); } catch { return; }
-  if (ms.length < 2 || !$('#view')) return;
+  if (my !== SCRSEQ || ms.length < 2 || !$('#view')) return;   // 等待期间又换了页面/又触发了一次，就放弃这一次
+  document.querySelectorAll('.scrub, .sbtn').forEach((x) => x.remove());
   const total = ms.reduce((s, m) => s + m.n, 0); let c = 0;
   const seg = ms.map((m) => { const a = c / total; c += m.n; return { ym: m.ym, a, b: c / total }; });
   const el = document.createElement('div'); el.className = 'scrub';
   el.innerHTML = '<div class="strk"></div><div class="sth"></div><div class="sbub" hidden></div>';
   $('#view').appendChild(el);
+  // 右上角小按钮：隐藏/显示日期滑条（记住选择）
+  const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'sbtn';
+  const sync = () => { const off = scrubOff(); el.hidden = off; btn.textContent = off ? '📅' : '✕'; btn.title = off ? '显示日期滑条' : '隐藏日期滑条'; };
+  btn.onclick = () => { try { localStorage.setItem('scrubOff', scrubOff() ? '0' : '1'); } catch {} sync(); };
+  $('#view').appendChild(btn); sync();
   const th = el.querySelector('.sth'), bub = el.querySelector('.sbub'), TH = 40;
   const segAt = (f) => seg.find((s) => f >= s.a && f < s.b) || seg[seg.length - 1];
   const place = (f, ym) => { const y = f * (el.clientHeight - TH); th.style.top = y + 'px'; if (ym) { bub.textContent = ym.slice(0, 4) + '年' + +ym.slice(5) + '月'; bub.style.top = y + 'px'; } };

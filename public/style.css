@@ -221,6 +221,8 @@ a.kp.on{border-color:var(--hero-ink);box-shadow:0 0 0 2px color-mix(in srgb,var(
 .scrub.on .sth{opacity:1;background:var(--accent,var(--ink));width:12px}
 .scrub .sbub{position:absolute;right:30px;height:40px;line-height:40px;padding:0 14px;border-radius:20px;background:var(--ink);color:var(--bg);font-weight:600;font-size:15px;white-space:nowrap;box-shadow:var(--shadow)}
 .scrub .sbub[hidden]{display:none}
+.scrub[hidden]{display:none}
+.sbtn{position:fixed;right:4px;top:84px;z-index:6;width:28px;height:28px;padding:0;border:0;border-radius:50%;background:var(--soft);color:var(--muted);font-size:13px;line-height:28px;text-align:center;opacity:.7;cursor:pointer}
 
 /* 名字方框：不滑动，几个孩子平分一行，放大一点 */
 .kidsrow{overflow:visible;flex-wrap:wrap;scroll-snap-type:none}
