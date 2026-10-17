@@ -349,8 +349,16 @@ async function viewTimeline(mode, qs) {
   CUR_F = filter;
   const plain = mode === 'home' && !filter.kid && !filter.cat && !filter.member && !filter.q && !filter.media;
   const chips = mode === 'diary' ? '' : `${memChipsHtml(filter)}<div class="chips cats">${catChipsHtml(filter.kid, filter.cat, filter.member)}</div>`;
-  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml(filter) + '<div id="otd"></div>' : ''}${searchHtml(filter)}${chips}${jumpHtml(filter, mode)}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
+  $('#view').innerHTML = `${mode === 'diary' ? '<h2 class="ptitle">📖 日记</h2>' : mode === 'home' ? heroHtml(filter) + '<div id="otd"></div>' : ''}<div class="ftog"><a class="chip" id="ft"></a></div><div id="fbox">${searchHtml(filter)}${chips}</div>${jumpHtml(filter, mode)}<div id="tl"></div><div id="more" class="empty" hidden><button class="btn ghost">加载更多</button></div>`;
   if (mode === 'home') loadOnThisDay();
+  // 筛选条（搜索 / 家人 / 分类）可以收起，记住选择；收起时若正在筛选会提示
+  {
+    const fb = $('#fbox'), ft = $('#ft'), act = !!(filter.q || filter.media || filter.cat || filter.member);
+    const off = () => { try { return localStorage.getItem('filtersOff') === '1'; } catch { return false; } };
+    const sync = () => { fb.hidden = off(); ft.textContent = off() ? '🔎 展开筛选' + (act ? '（已筛选）' : '') : '🔼 收起筛选'; };
+    ft.onclick = () => { try { localStorage.setItem('filtersOff', off() ? '0' : '1'); } catch {} sync(); };
+    sync();
+  }
   let offset = 0, last = '', total = 0;
   const tl = $('#tl');
   async function load() {
@@ -858,18 +866,49 @@ async function viewMe() {
   '最多取 120 张，超出会均匀抽样。<br><b id="mvinfo">正在统计照片…</b>',
   (dd) => {
     const f = $('form', dd), info = $('#mvinfo', dd); let seq = 0, last = null;
+    // 自选照片：picks=null 表示自动挑（每条记录最多 2 张）；否则是勾选的照片 key 集合
+    let picks = null, pkLoaded = false;
+    f.querySelector('.err').insertAdjacentHTML('beforebegin', `<input type="hidden" name="picks" value="">
+      <div class="row" style="margin:6px 0"><button type="button" class="btn ghost sm" id="mvpb">🖼 自己选照片</button><a class="lnk" id="mvpa" hidden>改回自动挑选</a></div>
+      <div id="mvpg" hidden><div class="row" style="margin-bottom:6px"><a class="lnk" id="mvall">全选</a><a class="lnk" id="mvnone">清空</a></div><div class="pkgrid" id="mvgrid"></div></div>`);
     const fmt = (s) => { const m = Math.floor(s / 60), r = s % 60; return m ? `${m} 分 ${r} 秒` : `${r} 秒`; };
     const show = () => {   // 片头 4 秒 + 每张停留 + 片尾 4 秒
+      const secs = +f.elements.secs.value || 4;
+      if (picks) {
+        const n = Math.min(picks.size, 120);
+        info.textContent = n ? `🖼 已自选 ${picks.size} 张` + (picks.size > 120 ? `（超过 120 张，会均匀抽样取 120 张）` : '') + `；每张 ${secs} 秒，视频约 ${fmt(8 + n * secs)}` : '还没有勾选照片';
+        return;
+      }
       if (!last) return;
       if (!last.used) { info.textContent = '这个范围内没有可用的照片（只用「成长记录」里的照片）'; return; }
-      const secs = +f.elements.secs.value || 4, len = 8 + last.used * secs;
-      info.textContent = `📷 共 ${last.photos} 张照片（来自 ${last.records} 条记录）` + (last.photos > last.used ? `，抽样取 ${last.used} 张` : '') + `；每张 ${secs} 秒，视频约 ${fmt(len)}`;
+      info.textContent = `📷 共 ${last.photos} 张照片（来自 ${last.records} 条记录）` + (last.photos > last.used ? `，抽样取 ${last.used} 张` : '') + `；每张 ${secs} 秒，视频约 ${fmt(8 + last.used * secs)}`;
     };
+    const syncPicks = () => { f.elements.picks.value = picks ? [...picks].join(',') : ''; show(); };
+    const grid = $('#mvgrid', dd);
+    const setAll = (on) => { grid.querySelectorAll('input').forEach((c) => { c.checked = on; c.parentElement.classList.toggle('on', on); }); picks = new Set(on ? [...grid.querySelectorAll('input')].map((c) => c.dataset.k) : []); syncPicks(); };
+    const loadPhotos = async () => {
+      grid.innerHTML = '<span class="note">加载中…</span>';
+      const q = new URLSearchParams({ kid: f.elements.kid.value, since: f.elements.since.value, until: f.elements.until.value });
+      let list = []; try { list = await api('/api/movie/photos?' + q); } catch (e) { grid.innerHTML = `<span class="note">${esc(e.message)}</span>`; return; }
+      pkLoaded = true;
+      grid.innerHTML = list.length ? list.map((p) => `<label class="pk on" title="${esc(p.date + ' ' + (p.title || ''))}"><img loading="lazy" src="${esc(p.thumb)}" alt=""><input type="checkbox" checked data-k="${esc(p.key)}"><small>${esc(p.date.slice(2))}</small></label>`).join('') : '<span class="note">这个范围内没有可用的照片</span>';
+      picks = new Set(list.map((p) => p.key)); syncPicks();
+    };
+    grid.addEventListener('change', (e) => { const c = e.target; if (!c.dataset.k) return; c.parentElement.classList.toggle('on', c.checked); c.checked ? picks.add(c.dataset.k) : picks.delete(c.dataset.k); syncPicks(); });
+    $('#mvall', dd).onclick = () => setAll(true); $('#mvnone', dd).onclick = () => setAll(false);
+    $('#mvpb', dd).onclick = async () => { $('#mvpg', dd).hidden = false; $('#mvpa', dd).hidden = false; if (!pkLoaded) await loadPhotos(); else if (!picks) setAll(true); };
+    $('#mvpa', dd).onclick = () => { picks = null; $('#mvpg', dd).hidden = true; $('#mvpa', dd).hidden = true; syncPicks(); };
     const load = async () => {
       const my = ++seq, q = new URLSearchParams({ kid: f.elements.kid.value, since: f.elements.since.value, until: f.elements.until.value });
       try { const r = await api('/api/movie/preview?' + q); if (my === seq) { last = r; show(); } } catch { if (my === seq) info.textContent = ''; }
     };
-    let t; f.addEventListener('change', (e) => { if (e.target.name === 'secs') show(); else { clearTimeout(t); t = setTimeout(load, 200); } });
+    let t; f.addEventListener('change', (e) => {
+      const n = e.target.name; if (!n) return;   // 照片勾选框没有 name，由上面的 grid 自己处理
+      if (n === 'secs') show();
+      else if (['kid', 'since', 'until'].includes(n)) {   // 条件变了：已勾的照片作废，若选照片区开着就重新加载
+        clearTimeout(t); t = setTimeout(async () => { pkLoaded = false; if (picks) { await loadPhotos(); } load(); }, 200);
+      }
+    });
     load();
   });
   mvList();

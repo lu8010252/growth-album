@@ -221,6 +221,16 @@ a.kp.on{border-color:var(--hero-ink);box-shadow:0 0 0 2px color-mix(in srgb,var(
 .scrub.on .sth{opacity:1;background:var(--accent,var(--ink));width:12px}
 .scrub .sbub{position:absolute;right:30px;height:40px;line-height:40px;padding:0 14px;border-radius:20px;background:var(--ink);color:var(--bg);font-weight:600;font-size:15px;white-space:nowrap;box-shadow:var(--shadow)}
 .scrub .sbub[hidden]{display:none}
+/* 回顾视频「自己选照片」缩略图 */
+.pkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:4px;max-height:38vh;overflow:auto}
+.pk{position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;cursor:pointer;background:var(--soft)}
+.pk img{width:100%;height:100%;object-fit:cover;opacity:.35;transition:opacity .15s}
+.pk.on img{opacity:1}
+.pk input{position:absolute;top:4px;left:4px;width:18px;height:18px;margin:0}
+.pk small{position:absolute;left:0;right:0;bottom:0;background:#0008;color:#fff;font-size:10px;text-align:center;padding:1px 0}
+/* 首页/日记：筛选条（搜索、家人、分类）可以收起 */
+#fbox[hidden]{display:none}
+.ftog{margin:6px 2px}
 
 /* 名字方框：不滑动，几个孩子平分一行，放大一点 */
 .kidsrow{overflow:visible;flex-wrap:wrap;scroll-snap-type:none}

@@ -743,7 +743,9 @@ const dateCn = (d) => { const [y, m, dd] = d.split('-').map(Number); return `${y
 const MOVIE_MAX = 120;   // 最多多少张照片（超过就均匀抽样），免得视频太长、服务器忙太久
 const dayOk = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '');
 // 只用「成长记录」：日记、时间胶囊不进视频（视频会拿到大屏上给很多人看）；视频文件不用，只取照片
-function movieSlides(user, kid, since, until) {
+// picks：自己挑的照片（key = 记录id:媒体id）；不传就是自动取每条记录最多 2 张。
+// pickList=true 时不挑选，列出范围内所有可用照片，给「自选照片」的缩略图用。
+function movieSlides(user, kid, since, until, picks = null, pickList = false) {
   const list = [...posts.values()].filter((p) => p.type === 'record' && canView(user, p) && (!kid || p.kidIds.includes(kid.id) || !p.kidIds.length) && (!since || p.date >= since) && (!until || p.date <= until));
   list.sort((a, c) => (a.date < c.date ? -1 : a.date > c.date ? 1 : a.createdAt < c.createdAt ? -1 : 1));
   const slides = [];
@@ -751,9 +753,12 @@ function movieSlides(user, kid, since, until) {
     const ks = (kid ? [kid] : p.kidIds.map(kidById).filter(Boolean)).filter((k) => k.birthday);
     const line2 = [dateCn(p.date), ...ks.map((k) => `${ks.length > 1 || !kid ? k.name + ' ' : ''}${ageShort(k.birthday, p.date)}`)].join(' · ');
     const line1 = cut(p.title || (p.body || '').split('\n')[0], 22);
-    for (const m of p.media.filter((x) => x.kind === 'image').slice(0, 2)) {
+    const imgs = p.media.filter((x) => x.kind === 'image');
+    for (const m of (picks || pickList ? imgs : imgs.slice(0, 2))) {
+      const key = p.id + ':' + m.id;
+      if (picks && !picks.has(key)) continue;
       const f = path.join(postDir(p.id), 'files', m.view || m.file);
-      if (fs.existsSync(f)) slides.push({ file: f, line1, line2, date: p.date });
+      if (fs.existsSync(f)) { const o = mediaOut(p.id, m); slides.push({ file: f, line1, line2, date: p.date, key, thumb: o.thumb || o.url, title: line1 }); }
     }
   }
   return { slides, records: list.length };
@@ -764,13 +769,21 @@ app.get('/api/movie/preview', needLogin, (req, res) => {
   const { slides, records } = movieSlides(req.user, kid, dayOk(req.query.since), dayOk(req.query.until));
   res.json({ photos: slides.length, used: Math.min(slides.length, MOVIE_MAX), max: MOVIE_MAX, records });
 });
+// 「自选照片」：列出这个范围内所有可选的照片（缩略图）
+app.get('/api/movie/photos', needLogin, (req, res) => {
+  const kid = kids.find((k) => k.id === req.query.kid);
+  const { slides } = movieSlides(req.user, kid, dayOk(req.query.since), dayOk(req.query.until), null, true);
+  res.json(slides.map((s) => ({ key: s.key, date: s.date, title: s.title, thumb: s.thumb })));
+});
 app.post('/api/movie', needLogin, (req, res) => {
   if (!findFont()) return res.status(500).json({ error: '服务器缺少中文字体，请把镜像更新到最新版（docker compose pull && docker compose up -d）' });
   if (movieBusy) return res.status(409).json({ error: '正在生成另一个视频，请等它完成后再试' });
   const b = req.body || {}, kid = kids.find((k) => k.id === b.kid);
   const since = dayOk(b.since), until = dayOk(b.until), secs = Math.min(Math.max(+b.secs || 4, 3), 8);
-  let { slides } = movieSlides(req.user, kid, since, until);
-  if (!slides.length) return res.status(400).json({ error: '这个范围内没有可用的照片（只用「成长记录」里的照片）' });
+  // 自选照片：picks 是用逗号隔开的 key 列表；挑了就只用挑的（按日期顺序），不再抽样
+  const picks = typeof b.picks === 'string' && b.picks ? new Set(b.picks.split(',').filter(Boolean)) : null;
+  let { slides } = movieSlides(req.user, kid, since, until, picks);
+  if (!slides.length) return res.status(400).json({ error: picks ? '挑的照片里没有可用的（可能已被删除）' : '这个范围内没有可用的照片（只用「成长记录」里的照片）' });
   if (slides.length > MOVIE_MAX) slides = Array.from({ length: MOVIE_MAX }, (_, i) => slides[Math.floor((i * slides.length) / MOVIE_MAX)]);
   for (const [id, j] of movies) if (Date.now() - j.at > 6 * 3600e3) { fsp.rm(j.file, { force: true }).catch(() => {}); movies.delete(id); }
   const id = rand(6), job = { id, userId: req.user.id, state: 'running', done: 0, total: slides.length + 2, at: Date.now(), file: path.join(MOVIE_DIR, id + '.mp4'),
