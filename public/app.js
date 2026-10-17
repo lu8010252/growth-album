@@ -94,7 +94,7 @@ function refsDialog(kind, kidId) { // kind: 'kids' | 'members'
   };
   draw();
 }
-function formDialog(title, fields, onOk, okText = '保存', note = '') {
+function formDialog(title, fields, onOk, okText = '保存', note = '', onOpen = null) {
   const d = document.createElement('dialog');
   const fh = fields.map((f) => {
     const v = f.value ?? '';
@@ -106,6 +106,7 @@ function formDialog(title, fields, onOk, okText = '保存', note = '') {
   document.body.appendChild(d); d.showModal();
   $('[data-x]', d).onclick = () => d.close();
   d.addEventListener('close', () => d.remove());
+  if (onOpen) onOpen(d);
   $('form', d).onsubmit = async (e) => {
     e.preventDefault();
     const vals = Object.fromEntries(new FormData(e.target));
@@ -155,7 +156,7 @@ function openReview(defKid) {
   const d = aiResultDialog({
     heading: '成长回顾', autoRun: false, useText: '保存为一条记录',
     controls: sel('rvk', '给谁写', [['', '全家一起'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], defKid || '') + sel('rvp', '哪段时间', [['', '加载中…']], '') +
-      '<p class="note">时间列出的是你有成长记录的年和月。只会用这段时间的「成长记录」，不会用到任何日记。</p>',
+      '<p class="note">时间列出的是你有成长记录的年和月。只会用这段时间的「成长记录」，不会用到任何日记。<br><b id="rvinfo"></b></p>',
     run: (dd) => { if (!$('#rvp', dd).value) throw new Error('还没有可以回顾的成长记录'); return api('/api/ai/review', { json: { kidId: $('#rvk', dd).value, period: $('#rvp', dd).value } }); },
     onUse: async (r) => {
       const m = r.meta;
@@ -175,8 +176,18 @@ function openReview(defKid) {
     }
     o.push(['all', '全部时间（所有成长记录）']);
     sp.innerHTML = o.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join('');
-    sp.value = ms[0].ym;
+    sp.value = ms[0].ym; rvCount();
   }).catch(() => {});
+  // 选好孩子和时间段后，显示会用到多少条记录、多少张照片
+  let seq = 0;
+  async function rvCount() {
+    const info = $('#rvinfo', d), p = $('#rvp', d).value, my = ++seq; if (!info || !p) return;
+    try {
+      const r = await api('/api/ai/review/preview?' + new URLSearchParams({ kidId: $('#rvk', d).value, period: p }));
+      if (my === seq && info.isConnected) info.textContent = r.records ? `📷 这段时间共 ${r.records} 条成长记录、${r.photos} 张照片` : '这段时间还没有成长记录';
+    } catch { if (my === seq && info.isConnected) info.textContent = ''; }
+  }
+  $('#rvk', d).addEventListener('change', rvCount); $('#rvp', d).addEventListener('change', rvCount);
 }
 
 /* ---------- 大图查看 ---------- */
@@ -843,7 +854,24 @@ async function viewMe() {
     { name: 'since', label: '从（可留空）', type: 'date', value: '' },
     { name: 'until', label: '到（可留空）', type: 'date', value: '' },
     { name: 'secs', label: '每张停留', type: 'select', options: [['3', '3 秒'], ['4', '4 秒'], ['5', '5 秒'], ['6', '6 秒'], ['8', '8 秒']], value: '4' }],
-  async (v) => { const r = await api('/api/movie', { json: v }); toast(`开始生成，共 ${r.total} 张照片`); mvList(); }, '开始生成', '最多取 120 张，超出会均匀抽样。');
+  async (v) => { const r = await api('/api/movie', { json: v }); toast(`开始生成，共 ${r.total} 张照片`); mvList(); }, '开始生成',
+  '最多取 120 张，超出会均匀抽样。<br><b id="mvinfo">正在统计照片…</b>',
+  (dd) => {
+    const f = $('form', dd), info = $('#mvinfo', dd); let seq = 0, last = null;
+    const fmt = (s) => { const m = Math.floor(s / 60), r = s % 60; return m ? `${m} 分 ${r} 秒` : `${r} 秒`; };
+    const show = () => {   // 片头 4 秒 + 每张停留 + 片尾 4 秒
+      if (!last) return;
+      if (!last.used) { info.textContent = '这个范围内没有可用的照片（只用「成长记录」里的照片）'; return; }
+      const secs = +f.elements.secs.value || 4, len = 8 + last.used * secs;
+      info.textContent = `📷 共 ${last.photos} 张照片（来自 ${last.records} 条记录）` + (last.photos > last.used ? `，抽样取 ${last.used} 张` : '') + `；每张 ${secs} 秒，视频约 ${fmt(len)}`;
+    };
+    const load = async () => {
+      const my = ++seq, q = new URLSearchParams({ kid: f.elements.kid.value, since: f.elements.since.value, until: f.elements.until.value });
+      try { const r = await api('/api/movie/preview?' + q); if (my === seq) { last = r; show(); } } catch { if (my === seq) info.textContent = ''; }
+    };
+    let t; f.addEventListener('change', (e) => { if (e.target.name === 'secs') show(); else { clearTimeout(t); t = setTimeout(load, 200); } });
+    load();
+  });
   mvList();
   $('#rn').onclick = () => formDialog('改名字', [{ name: 'name', label: '名字', value: S.me.name }], async (v) => { await api('/api/me', { method: 'PUT', json: v }); await refresh(); });
   $('#pw').onclick = () => formDialog('改密码', [{ name: 'old', label: '旧密码', type: 'password' }, { name: 'pw', label: '新密码（至少 6 位）', type: 'password' }], async (v) => { await api('/api/me/password', { json: v }); toast('密码已修改'); });

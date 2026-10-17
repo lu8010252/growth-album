@@ -741,16 +741,12 @@ function ageShort(b, d) {
 const cut = (t, n) => { const a = [...String(t || '').replace(/\s+/g, ' ').trim()]; return a.length > n ? a.slice(0, n - 1).join('') + '…' : a.join(''); };
 const dateCn = (d) => { const [y, m, dd] = d.split('-').map(Number); return `${y}年${m}月${dd}日`; };
 const MOVIE_MAX = 120;   // 最多多少张照片（超过就均匀抽样），免得视频太长、服务器忙太久
-app.post('/api/movie', needLogin, (req, res) => {
-  if (!findFont()) return res.status(500).json({ error: '服务器缺少中文字体，请把镜像更新到最新版（docker compose pull && docker compose up -d）' });
-  if (movieBusy) return res.status(409).json({ error: '正在生成另一个视频，请等它完成后再试' });
-  const b = req.body || {}, kid = kids.find((k) => k.id === b.kid);
-  const day = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '');
-  const since = day(b.since), until = day(b.until), secs = Math.min(Math.max(+b.secs || 4, 3), 8);
-  // 只用「成长记录」：日记、时间胶囊不进视频（视频会拿到大屏上给很多人看）；视频文件不用，只取照片
-  let list = [...posts.values()].filter((p) => p.type === 'record' && canView(req.user, p) && (!kid || p.kidIds.includes(kid.id) || !p.kidIds.length) && (!since || p.date >= since) && (!until || p.date <= until));
+const dayOk = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '');
+// 只用「成长记录」：日记、时间胶囊不进视频（视频会拿到大屏上给很多人看）；视频文件不用，只取照片
+function movieSlides(user, kid, since, until) {
+  const list = [...posts.values()].filter((p) => p.type === 'record' && canView(user, p) && (!kid || p.kidIds.includes(kid.id) || !p.kidIds.length) && (!since || p.date >= since) && (!until || p.date <= until));
   list.sort((a, c) => (a.date < c.date ? -1 : a.date > c.date ? 1 : a.createdAt < c.createdAt ? -1 : 1));
-  let slides = [];
+  const slides = [];
   for (const p of list) {
     const ks = (kid ? [kid] : p.kidIds.map(kidById).filter(Boolean)).filter((k) => k.birthday);
     const line2 = [dateCn(p.date), ...ks.map((k) => `${ks.length > 1 || !kid ? k.name + ' ' : ''}${ageShort(k.birthday, p.date)}`)].join(' · ');
@@ -760,6 +756,20 @@ app.post('/api/movie', needLogin, (req, res) => {
       if (fs.existsSync(f)) slides.push({ file: f, line1, line2, date: p.date });
     }
   }
+  return { slides, records: list.length };
+}
+// 选好孩子和日期后，先看看有多少张照片（超过上限会均匀抽样），用来估算视频时长
+app.get('/api/movie/preview', needLogin, (req, res) => {
+  const kid = kids.find((k) => k.id === req.query.kid);
+  const { slides, records } = movieSlides(req.user, kid, dayOk(req.query.since), dayOk(req.query.until));
+  res.json({ photos: slides.length, used: Math.min(slides.length, MOVIE_MAX), max: MOVIE_MAX, records });
+});
+app.post('/api/movie', needLogin, (req, res) => {
+  if (!findFont()) return res.status(500).json({ error: '服务器缺少中文字体，请把镜像更新到最新版（docker compose pull && docker compose up -d）' });
+  if (movieBusy) return res.status(409).json({ error: '正在生成另一个视频，请等它完成后再试' });
+  const b = req.body || {}, kid = kids.find((k) => k.id === b.kid);
+  const since = dayOk(b.since), until = dayOk(b.until), secs = Math.min(Math.max(+b.secs || 4, 3), 8);
+  let { slides } = movieSlides(req.user, kid, since, until);
   if (!slides.length) return res.status(400).json({ error: '这个范围内没有可用的照片（只用「成长记录」里的照片）' });
   if (slides.length > MOVIE_MAX) slides = Array.from({ length: MOVIE_MAX }, (_, i) => slides[Math.floor((i * slides.length) / MOVIE_MAX)]);
   for (const [id, j] of movies) if (Date.now() - j.at > 6 * 3600e3) { fsp.rm(j.file, { force: true }).catch(() => {}); movies.delete(id); }
@@ -950,6 +960,13 @@ function periodRange(p) {
   if (/^\d{4}$/.test(p)) return { from: p + '-01-01', to: p + '-12-31', label: p + '年', year: true };
   return null;
 }
+// 选好孩子和时间段后，先看看会用到多少条记录、多少张照片
+app.get('/api/ai/review/preview', needWrite, (req, res) => {
+  const r = periodRange(String(req.query.period || '')); if (!r) return res.json({ records: 0, photos: 0 });
+  const kid = kids.find((k) => k.id === req.query.kidId) || null;
+  const list = [...posts.values()].filter((p) => p.type === 'record' && p.date >= r.from && p.date <= r.to && (!kid || p.kidIds.includes(kid.id) || !p.kidIds.length));
+  res.json({ records: list.length, photos: list.reduce((s, p) => s + p.media.filter((m) => m.kind === 'image').length, 0) });
+});
 app.post('/api/ai/review', needWrite, aiGuard, async (req, res) => {
   if (req.user.role === 'child') return res.status(403).json({ error: '成长回顾由家长生成' });
   const r = periodRange(String(req.body.period || '')); if (!r) return res.status(400).json({ error: '时间范围不对' });
