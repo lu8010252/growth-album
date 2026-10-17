@@ -14,11 +14,10 @@ services:
       # 所有照片、视频、文字都在这个文件夹，备份它就等于备份全部
       - ./data:/app/data
 
-  # 自建人脸识别服务（可选，默认不启动，约占 1GB 内存）。要用时：docker compose --profile face up -d
+  # 自建人脸识别服务（约占 1GB 内存，会和成长册一起启动；不想用就删掉下面整段 growth-album-face）
   # 然后在成长册「我的 → AI 助手 → 设置」的「自建人脸识别接口地址」填 http://growth-album-face:8000/identify
   # 和上面的成长册在同一个默认网络里，容器直连，不用额外建网络，也不用开放任何公网端口。
   growth-album-face:
-    profiles: ["face"]
     image: ghcr.io/lu8010252/growth-album-face:latest
     container_name: growth-album-face
     restart: unless-stopped

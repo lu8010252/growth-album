@@ -104,7 +104,7 @@ services:
   - 也可以接自建人脸识别服务（如 CompreFace、DeepFace 包一层）：在「AI 助手 → 设置」填「自建人脸识别接口地址」，填了就不再用大模型。服务器会 `POST` JSON（可带 `Authorization: Bearer <密钥>`）：
     `{"date":"2024-05-01","candidates":[{"id":"k_xx","name":"小明","birthday":"2017-01-01","age":"7岁4个月","refs":["<base64 jpg>",…]}],"images":["<base64 jpg>",…]}`
     期望返回，`results` 与 `images` 顺序一一对应：`{"results":[{"kidIds":["k_xx"]},{"kidIds":[]}]}`
-  - **不想折腾 AI 接口？用现成的自建服务**：仓库里的 `face-service/` 就是按上面约定写好的本地人脸识别（InsightFace，纯 CPU，约 1GB 内存，照片不出你的服务器）。推送后 GitHub Actions 会构建镜像 `ghcr.io/lu8010252/growth-album-face:latest`，改掉 `docker-compose.yml` 里 `growth-album-face` 的 `FACE_KEY`，再执行 `docker compose --profile face up -d` 启动（默认不启动），然后在成长册「AI 助手 → 设置」填：接口地址 `http://growth-album-face:8000/identify`，密钥填同一串 `FACE_KEY`。两个服务在同一个 compose、同一个默认网络里，不用另外建网络，容器之间直连，不需要开放公网端口（`host.docker.internal` 在甲骨文这类默认有 iptables 拦截的机器上会连不上）。每个孩子多传几张不同年龄的参考照会更准；认不出就调低 `THRESHOLD`（如 0.32），认错就调高（如 0.45）。孩子的脸随年龄变化大，小宝宝阶段准确率会低一些，过一两年更新参考照即可。
+  - **不想折腾 AI 接口？用现成的自建服务**：仓库里的 `face-service/` 就是按上面约定写好的本地人脸识别（InsightFace，纯 CPU，约 1GB 内存，照片不出你的服务器）。推送后 GitHub Actions 会构建镜像 `ghcr.io/lu8010252/growth-album-face:latest`，改掉 `docker-compose.yml` 里 `growth-album-face` 的 `FACE_KEY`，再重新部署即可，它会和成长册一起启动（不想用就删掉 compose 里 `growth-album-face` 那一段），然后在成长册「AI 助手 → 设置」填：接口地址 `http://growth-album-face:8000/identify`，密钥填同一串 `FACE_KEY`。两个服务在同一个 compose、同一个默认网络里，不用另外建网络，容器之间直连，不需要开放公网端口（`host.docker.internal` 在甲骨文这类默认有 iptables 拦截的机器上会连不上）。每个孩子多传几张不同年龄的参考照会更准；认不出就调低 `THRESHOLD`（如 0.32），认错就调高（如 0.45）。孩子的脸随年龄变化大，小宝宝阶段准确率会低一些，过一两年更新参考照即可。
   - 参考照缩成 512px 存在 `data/kidrefs/`，导出包里不包含。
 
 ## Android App（APK）
