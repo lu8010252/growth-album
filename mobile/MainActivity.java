@@ -2,6 +2,8 @@ package app.growthalbum;
 
 import android.app.DownloadManager;
 import android.content.Context;
+import android.content.res.Configuration;
+import android.util.DisplayMetrics;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -16,6 +18,16 @@ import com.getcapacitor.BridgeActivity;
 // Capacitor 的 WebView 默认不处理“下载”，网页里的下载链接（导出 zip、回顾视频 MP4、原图）点了没反应。
 // 这里接管下载：带上登录 cookie，交给系统下载管理器，文件存到手机“下载”文件夹，完成后通知栏提示。
 public class MainActivity extends BridgeActivity {
+  // 不跟随系统的「显示大小」和「字体大小」：界面密度固定为手机出厂默认，字体缩放固定为 1。
+  // （vivo 等手机调大“显示大小”后，网页布局会被整体放大而走形；这样 App 里就不受影响。）
+  @Override
+  protected void attachBaseContext(Context base) {
+    Configuration c = new Configuration(base.getResources().getConfiguration());
+    c.fontScale = 1.0f;
+    c.densityDpi = DisplayMetrics.DENSITY_DEVICE_STABLE;
+    super.attachBaseContext(base.createConfigurationContext(c));
+  }
+
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
@@ -35,6 +47,7 @@ public class MainActivity extends BridgeActivity {
       }
     });
     // 隐藏 WebView 自带的长滚动条（右边那条灰色长条）；页面照常可以滑动，网页里选日期的小滑条不受影响
+    getBridge().getWebView().getSettings().setTextZoom(100);   // 网页文字不随系统字体大小缩放
     getBridge().getWebView().setVerticalScrollBarEnabled(false);
     getBridge().getWebView().setHorizontalScrollBarEnabled(false);
     getBridge().getWebView().setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
