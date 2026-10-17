@@ -265,7 +265,7 @@ const str = (v, n) => String(v ?? '').trim().slice(0, n);
 
 app.get('/api/init', (req, res) => {
   const me = readUser(req);
-  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids.map(kidOut) : [], members: me ? members.map(memberOut) : [], settings: { title: settings.title }, ai: !!me && aiReady(), who: !!me && (aiReady() || !!aiCfg.faceUrl), qaQuestions: me ? qaQuestions() : [] });
+  res.json({ needSetup: users.length === 0, me: me && pubUser(me), kids: me ? kids.map(kidOut) : [], members: me ? members.map(memberOut) : [], settings: { title: settings.title, cats: me ? customCats() : [] }, ai: !!me && aiReady(), who: !!me && (aiReady() || !!aiCfg.faceUrl), qaQuestions: me ? qaQuestions() : [] });
 });
 app.post('/api/setup', (req, res) => {
   if (users.length) return res.status(403).json({ error: '已经初始化过了' });
@@ -408,8 +408,11 @@ app.delete('/api/users/:id', needAdmin, (req, res) => {
 
 /* 帖子 */
 // 成长记录的分类（日记、时间胶囊不分类）
-const CATS = ['daily', 'travel', 'award', 'exam', 'first', 'birthday', 'school', 'hobby', 'festival'];
-const catOfPost = (p) => (p.type === 'record' ? (CATS.includes(p.category) ? p.category : 'daily') : '');
+const BASE_CATS = ['daily', 'travel', 'award', 'exam', 'first', 'birthday', 'school', 'hobby', 'festival'];
+const customCats = () => (Array.isArray(settings.cats) ? settings.cats : []);   // 自己添加的分类：{ id, name, emoji, color }
+const catIds = () => BASE_CATS.concat(customCats().map((c) => c.id));
+const CAT_COLORS = ['#c0706a', '#5f8fbf', '#8a9a3f', '#b0759f', '#4aa39a', '#c08a3e', '#7b7fc9', '#a0805a'];
+const catOfPost = (p) => (p.type === 'record' ? (catIds().includes(p.category) ? p.category : 'daily') : '');
 function postFields(b, u, old) {
   const type = old ? old.type : (b.type === 'diary' || b.type === 'capsule' ? b.type : 'record');
   const date = isDay(b.date) ? b.date : (old ? old.date : localDay());
@@ -419,7 +422,7 @@ function postFields(b, u, old) {
   const mids = Array.isArray(b.memberIds) ? b.memberIds : String(b.memberIds || '').split(',');
   const memberIds = has('memberIds') ? mids.filter((id) => members.some((m) => m.id === id)) : (old ? old.memberIds || [] : []);
   const visibility = type === 'record' ? 'family' : has('visibility') ? (b.visibility === 'family' ? 'family' : 'private') : (old ? old.visibility : 'private');
-  const category = type !== 'record' ? '' : has('category') ? (CATS.includes(b.category) ? b.category : 'daily') : (old && CATS.includes(old.category) ? old.category : 'daily');
+  const category = type !== 'record' ? '' : has('category') ? (catIds().includes(b.category) ? b.category : 'daily') : (old && catIds().includes(old.category) ? old.category : 'daily');
   return {
     type, date, kidIds, memberIds, visibility, category,
     title: has('title') ? str(b.title, 100) : (old ? old.title : ''),
@@ -445,7 +448,7 @@ function filterPosts(req) {
   const { kid, type, q, cat, member, media } = req.query;
   let list = [...posts.values()].filter((p) => p.type !== 'capsule' && canView(req.user, p));   // 胶囊有自己的页面
   if (type) list = list.filter((p) => p.type === type);
-  if (cat && CATS.includes(cat)) list = list.filter((p) => catOfPost(p) === cat);
+  if (cat && catIds().includes(cat)) list = list.filter((p) => catOfPost(p) === cat);
   if (kid === 'together') list = list.filter((p) => p.kidIds.length >= 2);   // 双宝日常：两个以上孩子同框
   else if (kid) { const ids = String(kid).split(',').filter(Boolean); list = list.filter((p) => ids.every((id) => p.kidIds.includes(id))); }   // 多个孩子＝都在场（同框）
   if (['image', 'video', 'audio'].includes(media)) list = list.filter((p) => p.media.some((m) => m.kind === media));   // 只看带图片/视频/音频的
@@ -473,6 +476,18 @@ const getPost = (req, res) => {
 };
 app.get('/api/posts/:id', needLogin, (req, res) => { const p = getPost(req, res); if (p) res.json(toClient(p, req.user)); });
 
+// 自己添加 / 删除分类（删除后，原来属于它的记录会算作「日常」）
+app.post('/api/cats', needWrite, (req, res) => {
+  const name = str(req.body.name, 8);
+  if (!name) return res.status(400).json({ error: '请填分类名字' });
+  if (customCats().length >= 30) return res.status(400).json({ error: '自己添加的分类最多 30 个' });
+  const seg = [...new Intl.Segmenter().segment(str(req.body.emoji, 16))][0];
+  const c = { id: 'c' + rand(3), name, emoji: seg ? seg.segment : '🏷', color: CAT_COLORS[customCats().length % CAT_COLORS.length] };
+  settings.cats = [...customCats(), c]; saveSettings(); res.json(c);
+});
+app.delete('/api/cats/:id', needAdmin, (req, res) => {
+  settings.cats = customCats().filter((c) => c.id !== req.params.id); saveSettings(); res.json({ ok: true });
+});
 // 分类相册：每个分类的条数和封面（最新一条带图的记录）
 app.get('/api/cats', needLogin, (req, res) => {
   const out = {};

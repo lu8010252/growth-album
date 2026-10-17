@@ -5,7 +5,9 @@ const S = { me: null, kids: [], title: '成长册' };
 const ROLE_NAME = { admin: '管理员', member: '家人（可发布）', viewer: '家人（只读）', child: '孩子' };
 const IN_APP = /GrowthAlbumApp/.test(navigator.userAgent); // Android 外壳
 // 成长记录分类：[id, 图标, 名称, 颜色]
-const CATS = [['daily', '🌤', '日常', '#7d9a94'], ['travel', '🧳', '旅行', '#3f93c0'], ['award', '🏅', '奖状荣誉', '#d99a22'], ['exam', '📝', '考试成绩', '#7a6fc4'], ['first', '🌱', '第一次', '#4fa872'], ['birthday', '🎂', '生日', '#e0607e'], ['school', '🎒', '学校', '#d6843f'], ['hobby', '🎨', '兴趣特长', '#a864c0'], ['festival', '🧧', '节日', '#d4504b']];
+const BASE_CATS = [['daily', '🌤', '日常', '#7d9a94'], ['travel', '🧳', '旅行', '#3f93c0'], ['award', '🏅', '奖状荣誉', '#d99a22'], ['exam', '📝', '考试成绩', '#7a6fc4'], ['first', '🌱', '第一次', '#4fa872'], ['birthday', '🎂', '生日', '#e0607e'], ['school', '🎒', '学校', '#d6843f'], ['hobby', '🎨', '兴趣特长', '#a864c0'], ['festival', '🧧', '节日', '#d4504b']];
+let CATS = BASE_CATS;   // 内置分类 + 自己添加的（boot 时合并）
+const setCats = (extra) => { CATS = BASE_CATS.concat((extra || []).map((c) => [c.id, c.emoji, c.name, c.color])); };
 const catOf = (id) => CATS.find((c) => c[0] === id) || CATS[0];
 const catTag = (p) => (p.type === 'record' && p.category && p.category !== 'daily' ? `<span class="tag cat" style="--c:${catOf(p.category)[3]}">${catOf(p.category)[1]} ${catOf(p.category)[2]}</span>` : '');
 const ICON = {
@@ -110,6 +112,11 @@ function formDialog(title, fields, onOk, okText = '保存', note = '') {
     const err = $('.err', d); err.hidden = true;
     try { await onOk(vals); d.close(); } catch (x) { err.textContent = x.message; err.hidden = false; }
   };
+}
+// 添加自己的分类（名字 + 一个表情）；成功后 done(新分类)
+function addCatDialog(done) {
+  formDialog('添加分类', [{ name: 'name', label: '分类名字（最多 8 个字）', placeholder: '比如：游泳、读书、外婆家' }, { name: 'emoji', label: '图标（一个表情，可不填）', placeholder: '🏊' }],
+    async (v) => { const c = await api('/api/cats', { json: v }); S.customCats = [...(S.customCats || []), c]; setCats(S.customCats); done(c); });
 }
 function confirmBox(msg) { return confirm(msg); }
 
@@ -266,7 +273,7 @@ async function loadOnThisDay() {
 /* ---------- 搜索：放在「图片/视频/音频」那一行，点 🔍 展开输入框 ---------- */
 function searchHtml(f) {
   const mt = [['', '全部'], ['image', '🖼 图片'], ['video', '🎬 视频'], ['audio', '🎙 音频']];
-  return `<div class="chips" id="sm"><a class="chip ${f.q ? 'on' : ''}" id="sb">🔍${f.q ? ' ' + esc(f.q) : ''}</a>${mt.map(([k, n]) => `<a class="chip ${f.media === k ? 'on' : ''}" data-md="${k}">${n}</a>`).join('')}${f.q || f.media ? '<a class="chip" id="sc">清除</a>' : ''}</div>
+  return `<div class="chips" id="sm">${mt.map(([k, n]) => `<a class="chip ${f.media === k ? 'on' : ''}" data-md="${k}">${n}</a>`).join('')}${f.q || f.media ? '<a class="chip" id="sc">清除</a>' : ''}<a class="chip ${f.q ? 'on' : ''}" id="sb">🔍${f.q ? ' ' + esc(f.q) : ''}</a></div>
   <form class="sbar" id="sf" hidden><input type="text" id="sq" placeholder="搜标题、文字、文件名" value="${esc(f.q)}" enterkeyhint="search"><button class="btn sm" type="submit">搜索</button></form>`;
 }
 function bindSearch(mode, filter) {
@@ -505,7 +512,7 @@ async function viewCompose(id, qs) {
   $('#view').innerHTML = `<form class="panel" id="cf"><h3 style="margin:0">${post ? '编辑' : '新'}${names[type]}</h3>${typeSw}
     <div class="field"><span>${cap ? '写给谁（可多选；按「满几岁」解锁时以第一个为准）' : type === 'diary' ? '关于谁（可不选）' : '是谁的记录（不选＝全家；选两个＝双宝日常）'}</span>${kidSel}</div>
     ${memSel}
-    ${type === 'record' ? `<div class="field"><span>分类</span><div class="sel">${CATS.map(([id, ic, n]) => `<label><input type="radio" name="category" value="${id}" ${(post ? post.category || 'daily' : CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : 'daily') === id ? 'checked' : ''}><span>${ic} ${n}</span></label>`).join('')}</div></div>` : ''}
+    ${type === 'record' ? `<div class="field"><span>分类</span><div class="sel">${CATS.map(([id, ic, n]) => `<label><input type="radio" name="category" value="${id}" ${(post ? post.category || 'daily' : CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : 'daily') === id ? 'checked' : ''}><span>${ic} ${n}</span></label>`).join('')}<button type="button" class="chip" id="addcat">＋ 新分类</button></div></div>` : ''}
     ${cap ? '' : `<label class="field"><span>日期（这件事发生的那天）</span><input type="date" name="date" value="${post ? post.date : today()}" max="2100-01-01" required></label><p class="note" id="dn" hidden></p>`}
     ${fresh ? `<div class="field"><span>什么时候开启</span><div class="row"><select name="unlockMode" id="um"><option value="date">指定日期</option><option value="age">孩子满几岁那天</option></select><input type="date" name="unlockDate" id="ud" min="${addYears(today(), 0)}"><span id="ua" hidden><input type="text" inputmode="numeric" name="unlockAge" id="uai" placeholder="18" maxlength="2" style="width:64px"> 岁</span></div><p class="note" id="uh"></p></div>
       <p class="note">⚠️ 封存之后，连你自己也看不到内容，要等到开启那天。写好再封存吧。</p>` : ''}
@@ -527,6 +534,10 @@ async function viewCompose(id, qs) {
   }
   drawPv();
   const form = $('#cf');
+  if ($('#addcat')) $('#addcat').onclick = () => addCatDialog((c) => {
+    form.querySelectorAll('[name=category]').forEach((r) => (r.checked = false));
+    const l = document.createElement('label'); l.innerHTML = `<input type="radio" name="category" value="${c.id}" checked><span>${esc(c.emoji)} ${esc(c.name)}</span>`; $('#addcat').before(l);
+  });
   if (fresh) {
     const hint = () => {
       const m = $('#um').value; $('#ud').hidden = m !== 'date'; $('#ua').hidden = m !== 'age';
@@ -633,7 +644,11 @@ function viewTreasure() {
 async function viewCats() {
   const d = await api('/api/cats');
   $('#view').innerHTML = `<h2 class="ptitle">🗂 分类相册</h2><p class="note" style="margin:0 4px 12px">旅行、奖状、考试、第一次……发布记录时选一个分类，就会出现在这里。</p>
-  <div class="catgrid">${CATS.map(([id, ic, n, c]) => { const o = d[id] || { count: 0, cover: '' }; return `<a class="catcard" href="#/?cat=${id}" style="--c:${c}">${o.cover ? `<img loading="lazy" src="${o.cover}" alt="">` : `<em>${ic}</em>`}<div class="cl"><b>${ic} ${n}</b><small>${o.count} 条</small></div></a>`; }).join('')}</div>`;
+  <div class="catgrid">${CATS.map(([id, ic, n, c]) => { const o = d[id] || { count: 0, cover: '' }; return `<a class="catcard" href="#/?cat=${id}" style="--c:${c}">${o.cover ? `<img loading="lazy" src="${o.cover}" alt="">` : `<em>${ic}</em>`}<div class="cl"><b>${ic} ${n}</b><small>${o.count} 条</small></div></a>`; }).join('')}</div>
+  ${canWrite() ? '<div class="row" style="margin:14px 4px"><button class="btn ghost sm" id="nc">＋ 添加分类</button></div>' : ''}
+  ${S.me.role === 'admin' && (S.customCats || []).length ? `<div class="panel"><h3>自己添加的分类</h3>${S.customCats.map((c) => `<div class="item"><div>${esc(c.emoji)} <b>${esc(c.name)}</b></div><button class="btn danger sm" data-dc="${c.id}">删除</button></div>`).join('')}<p class="note">删除分类不会删记录，原来属于它的记录会算作「日常」。</p></div>` : ''}`;
+  if ($('#nc')) $('#nc').onclick = () => addCatDialog(() => viewCats());
+  document.querySelectorAll('[data-dc]').forEach((b) => (b.onclick = async () => { if (!confirmBox('删除这个分类？记录不会删，会算作「日常」。')) return; try { await api('/api/cats/' + b.dataset.dc, { method: 'DELETE' }); S.customCats = S.customCats.filter((c) => c.id !== b.dataset.dc); setCats(S.customCats); viewCats(); } catch (x) { toast(x.message); } }));
 }
 
 /* 成长数据：折线图用内联 SVG，不依赖任何外部库（离线也能看） */
@@ -903,7 +918,7 @@ async function route() {
 }
 async function boot() {
   const d = await api('/api/init');
-  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai; S.who = !!d.who; S.members = d.members || [];
+  S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai; S.who = !!d.who; S.members = d.members || []; S.customCats = d.settings.cats || []; setCats(S.customCats);
 }
 window.addEventListener('hashchange', route);
 // 给安卓 App 的返回键用：返回 true 表示网页已处理；false 表示已在首页，可以退出
