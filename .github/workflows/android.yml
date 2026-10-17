@@ -37,17 +37,25 @@ jobs:
           rm -rf $R/mipmap-anydpi-v26
           cp -r icons/mipmap-* $R/
           npx cap sync android
-      - name: 打包 APK
-        working-directory: mobile/android
-        run: ./gradlew assembleDebug --no-daemon
+      - name: 打包两个 APK（普通版 / 固定大小版）
+        run: |
+          F=$(find mobile/android/app/src/main/java -name MainActivity.java | head -1)
+          mkdir -p out
+          # 普通版：跟随系统的显示大小和字体大小
+          sed -i 's/FIXED_SIZE = true/FIXED_SIZE = false/' "$F"
+          (cd mobile/android && ./gradlew assembleDebug --no-daemon)
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk out/growth-album.apk
+          # 固定大小版：不跟随系统的显示大小和字体大小
+          sed -i 's/FIXED_SIZE = false/FIXED_SIZE = true/' "$F"
+          (cd mobile/android && ./gradlew assembleDebug --no-daemon)
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk out/growth-album-fixed.apk
       - uses: actions/upload-artifact@v4
         with:
           name: growth-album-apk
-          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          path: out/*.apk
       - name: 发布到 Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk growth-album.apk
           gh release delete apk-latest -y --cleanup-tag || true
-          gh release create apk-latest growth-album.apk --title "成长册 Android 安装包" --notes "下载 growth-album.apk 安装；首次打开填你家成长册的服务器地址。构建于 ${{ github.sha }}"
+          gh release create apk-latest out/growth-album.apk out/growth-album-fixed.apk --title "成长册 Android 安装包" --notes "growth-album.apk：普通版（跟随系统的显示大小/字体大小）。growth-album-fixed.apk：固定大小版（不受系统显示大小影响，适合调大显示大小后界面走形的手机）。两个装一个就行，首次打开填你家成长册的服务器地址。构建于 ${{ github.sha }}"

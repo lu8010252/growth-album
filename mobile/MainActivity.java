@@ -20,8 +20,11 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
   // 不跟随系统的「显示大小」和「字体大小」：界面密度固定为手机出厂默认，字体缩放固定为 1。
   // （vivo 等手机调大“显示大小”后，网页布局会被整体放大而走形；这样 App 里就不受影响。）
+  // 打包时由 GitHub Actions 生成两个版本：普通版（false，跟随系统显示大小）和固定大小版（true）。
+  private static final boolean FIXED_SIZE = true;
   @Override
   protected void attachBaseContext(Context base) {
+    if (!FIXED_SIZE) { super.attachBaseContext(base); return; }
     Configuration c = new Configuration(base.getResources().getConfiguration());
     c.fontScale = 1.0f;
     c.densityDpi = DisplayMetrics.DENSITY_DEVICE_STABLE;
@@ -47,7 +50,7 @@ public class MainActivity extends BridgeActivity {
       }
     });
     // 隐藏 WebView 自带的长滚动条（右边那条灰色长条）；页面照常可以滑动，网页里选日期的小滑条不受影响
-    getBridge().getWebView().getSettings().setTextZoom(100);   // 网页文字不随系统字体大小缩放
+    if (FIXED_SIZE) getBridge().getWebView().getSettings().setTextZoom(100);   // 网页文字不随系统字体大小缩放
     getBridge().getWebView().setVerticalScrollBarEnabled(false);
     getBridge().getWebView().setHorizontalScrollBarEnabled(false);
     getBridge().getWebView().setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
