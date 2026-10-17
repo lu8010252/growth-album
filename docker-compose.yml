@@ -13,10 +13,18 @@ services:
     volumes:
       # 所有照片、视频、文字都在这个文件夹，备份它就等于备份全部
       - ./data:/app/data
-    networks:
-      - default
-      - growth-net   # 与人脸识别服务同网，接口地址填 http://growth-album-face:8000/identify
 
-networks:
-  growth-net:
-    external: true   # 先执行一次：docker network create growth-net
+  # 自建人脸识别服务（可选，默认不启动，约占 1GB 内存）。要用时：docker compose --profile face up -d
+  # 然后在成长册「我的 → AI 助手 → 设置」的「自建人脸识别接口地址」填 http://growth-album-face:8000/identify
+  # 和上面的成长册在同一个默认网络里，容器直连，不用额外建网络，也不用开放任何公网端口。
+  growth-album-face:
+    profiles: ["face"]
+    image: ghcr.io/lu8010252/growth-album-face:latest
+    container_name: growth-album-face
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"   # 仅本机可访问，方便在服务器上 curl 测试
+    environment:
+      - FACE_KEY=换成一串随机字符     # 成长册里「自建接口的密钥」填同一串
+      - THRESHOLD=0.38                # 认不出就调低（如 0.32），认错就调高（如 0.45）
+      - TZ=Asia/Shanghai
