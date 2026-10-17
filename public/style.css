@@ -208,3 +208,16 @@ a.kp.on{border-color:var(--hero-ink);box-shadow:0 0 0 2px color-mix(in srgb,var(
 .kphint{font-size:11px;opacity:.6;margin-top:8px}
 .sbar{display:flex;gap:8px;margin:0 2px 8px}
 .sbar input{flex:1;min-width:0;border:1px solid var(--line);background:var(--card);border-radius:999px;padding:8px 14px;outline:none}
+
+.kidsrow{-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity;padding-bottom:2px}
+.kp,a.kp{flex:none;min-width:0;scroll-snap-align:start;grid-template-columns:30px auto;column-gap:8px;padding:6px 12px 6px 6px;border-radius:16px}
+.kp i{width:30px;height:30px;font-size:16px}
+.kp b{font-size:14px;white-space:nowrap}
+.kp small{font-size:11px;white-space:nowrap}
+.sbar[hidden]{display:none}
+.scrub{position:fixed;right:0;top:120px;bottom:90px;width:34px;z-index:5;touch-action:none;user-select:none;-webkit-user-select:none}
+.scrub .strk{position:absolute;right:6px;top:0;bottom:0;width:3px;border-radius:3px;background:var(--line);opacity:.5}
+.scrub .sth{position:absolute;right:2px;top:0;width:10px;height:40px;border-radius:6px;background:var(--muted);opacity:.55;transition:opacity .15s}
+.scrub.on .sth{opacity:1;background:var(--accent,var(--ink));width:12px}
+.scrub .sbub{position:absolute;right:30px;height:40px;line-height:40px;padding:0 14px;border-radius:20px;background:var(--ink);color:var(--bg);font-weight:600;font-size:15px;white-space:nowrap;box-shadow:var(--shadow)}
+.scrub .sbub[hidden]{display:none}

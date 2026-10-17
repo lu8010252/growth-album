@@ -233,7 +233,7 @@ function heroHtml(filter) {
   const sel = (filter && filter.kid && filter.kid !== 'together' ? filter.kid.split(',') : filter && filter.kid === 'together' ? S.kids.map((k) => k.id) : []);
   const tog = (id) => { const n = sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]; return filterHref(n.join(','), filter.cat, filter.member); };
   const kids = S.kids.map((k) => `<a class="kp ${sel.includes(k.id) ? 'on' : ''}" href="${tog(k.id)}"><i style="background:${k.color}">${esc(k.emoji)}</i><b>${esc(k.name)}</b>${k.birthday ? `<small>${ageText(k.birthday, today())}</small>` : ''}</a>`).join('');
-  return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}</div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>${S.kids.length > 1 ? '<div class="kphint">点名字筛选；两个都点＝双宝同框；再点一下取消</div>' : ''}` : ''}</section>`;
+  return `<section class="hero"><div class="hi">${greet()}，${esc(S.me.name)}</div><div class="sub" id="tot">记录她们长大的每一天</div>${kids ? `<div class="kidsrow">${kids}</div>` : ''}</section>`;
 }
 // 筛选条：孩子 + 分类，两者可以叠加
 let CUR_F = {};   // 当前时间线的搜索词和媒体类型，切换孩子/分类时带着走
@@ -263,50 +263,58 @@ async function loadOnThisDay() {
     }).join('')}</div></div>`;
   }).join('');
 }
-/* ---------- 搜索：关键词 + 图片/视频/音频 ---------- */
+/* ---------- 搜索：放在「图片/视频/音频」那一行，点 🔍 展开输入框 ---------- */
 function searchHtml(f) {
   const mt = [['', '全部'], ['image', '🖼 图片'], ['video', '🎬 视频'], ['audio', '🎙 音频']];
-  return `<form class="sbar" id="sf"><input type="text" id="sq" placeholder="搜标题、文字、文件名" value="${esc(f.q)}" enterkeyhint="search"><button class="btn sm" type="submit">搜索</button></form>
-  <div class="chips" id="sm">${mt.map(([k, n]) => `<a class="chip ${f.media === k ? 'on' : ''}" data-md="${k}">${n}</a>`).join('')}${f.q || f.media ? '<a class="chip" id="sc">清除搜索</a>' : ''}</div>`;
+  return `<div class="chips" id="sm"><a class="chip ${f.q ? 'on' : ''}" id="sb">🔍${f.q ? ' ' + esc(f.q) : ''}</a>${mt.map(([k, n]) => `<a class="chip ${f.media === k ? 'on' : ''}" data-md="${k}">${n}</a>`).join('')}${f.q || f.media ? '<a class="chip" id="sc">清除</a>' : ''}</div>
+  <form class="sbar" id="sf" hidden><input type="text" id="sq" placeholder="搜标题、文字、文件名" value="${esc(f.q)}" enterkeyhint="search"><button class="btn sm" type="submit">搜索</button></form>`;
 }
 function bindSearch(mode, filter) {
   const go = (q, media) => { location.hash = jumpUrl(mode, { ...filter, q, media }, ''); };
+  $('#sb').onclick = () => { const f = $('#sf'); f.hidden = !f.hidden; if (!f.hidden) $('#sq').focus(); };
   $('#sf').onsubmit = (e) => { e.preventDefault(); go($('#sq').value.trim(), filter.media); };
-  document.querySelectorAll('#sm [data-md]').forEach((a) => (a.onclick = () => go($('#sq').value.trim(), a.dataset.md)));
+  document.querySelectorAll('#sm [data-md]').forEach((a) => (a.onclick = () => go(filter.q, a.dataset.md)));
   if ($('#sc')) $('#sc').onclick = () => go('', '');
 }
 
-/* ---------- 快速跳转：点月份标签 / 顶部「跳转」，选年、月、具体某天 ---------- */
+/* ---------- 日期滑条：右边一条细滑条，拖动时显示年月，松手跳到那个月（像手机相册） ---------- */
 const jumpUrl = (mode, filter, to) => (mode === 'diary' ? '#/diary' : '#/') + '?' + [filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), filter.media && 'media=' + filter.media, to && 'to=' + to].filter(Boolean).join('&');
 const monthEnd = (ym) => ym + '-' + String(new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate()).padStart(2, '0');
 function jumpHtml(f, mode) {
-  return `<div class="jump"><button class="chip" id="jp" type="button">📅 跳转到某年某月</button>${f.to ? `<span class="note">正在看 ${f.to} 以前的</span><a class="chip on" id="jb" href="${jumpUrl(mode, f, '')}">回到最新</a>` : ''}</div>`;
+  return f.to ? `<div class="jump"><span class="note">正在看 ${f.to} 以前的</span><a class="chip on" href="${jumpUrl(mode, f, '')}">回到最新</a></div>` : '';
 }
-function bindJump(mode, filter, qs) {
-  const open = async (ym0) => {
-    let ms = []; try { ms = await api('/api/posts/months?' + ['type=' + (mode === 'diary' ? 'diary' : ''), filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), filter.media && 'media=' + filter.media].filter(Boolean).join('&')); } catch (e) { return toast(e.message); }
-    if (!ms.length) return toast('还没有可以跳转的记录');
-    const cnt = Object.fromEntries(ms.map((m) => [m.ym, m.n])), years = [...new Set(ms.map((m) => m.ym.slice(0, 4)))];
-    let yr = (ym0 || ms[0].ym).slice(0, 4); if (!years.includes(yr)) yr = years[0];
-    const d = document.createElement('dialog'); d.className = 'jdlg'; document.body.appendChild(d); d.showModal();
-    d.addEventListener('close', () => d.remove());
-    d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
-    const go = (to) => { d.close(); location.hash = jumpUrl(mode, filter, to); };
-    const draw = () => {
-      d.innerHTML = `<div class="dlg"><h3>📅 跳转到</h3><div class="chips jy">${years.map((y) => `<a class="chip ${y === yr ? 'on' : ''}" data-y="${y}">${y}年</a>`).join('')}</div>
-      <div class="jm">${Array.from({ length: 12 }, (_, i) => { const ym = yr + '-' + String(i + 1).padStart(2, '0'), n = cnt[ym] || 0; return `<button type="button" class="jmb" data-m="${ym}" ${n ? '' : 'disabled'}><b>${i + 1}月</b><small>${n ? n + ' 条' : '—'}</small></button>`; }).join('')}</div>
-      <label class="field"><span>或者直接选某一天（显示这天以前的记录）</span><div class="row"><input type="date" id="jd" min="${ms[ms.length - 1].ym}-01" max="${today()}"><button class="btn" id="jg" type="button">跳转</button></div></label>
-      <div class="row" style="margin-top:8px"><button class="btn ghost" id="jl" type="button">回到最新</button><button class="btn ghost" id="jx" type="button">关闭</button></div></div>`;
-      d.querySelectorAll('[data-y]').forEach((a) => (a.onclick = () => { yr = a.dataset.y; draw(); }));
-      d.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => go(monthEnd(b.dataset.m))));
-      d.querySelector('#jg').onclick = () => { const v = d.querySelector('#jd').value; if (v) go(v); };
-      d.querySelector('#jl').onclick = () => go('');
-      d.querySelector('#jx').onclick = () => d.close();
-    };
-    draw();
+let SCR = null;
+window.addEventListener('scroll', () => { if (SCR) requestAnimationFrame(SCR); }, { passive: true });
+async function bindScrub(mode, filter) {
+  SCR = null;
+  let ms = [];
+  try { ms = await api('/api/posts/months?' + ['type=' + (mode === 'diary' ? 'diary' : ''), filter.kid && 'kid=' + filter.kid, filter.cat && 'cat=' + filter.cat, filter.member && 'member=' + filter.member, filter.q && 'q=' + encodeURIComponent(filter.q), filter.media && 'media=' + filter.media].filter(Boolean).join('&')); } catch { return; }
+  if (ms.length < 2 || !$('#view')) return;
+  const total = ms.reduce((s, m) => s + m.n, 0); let c = 0;
+  const seg = ms.map((m) => { const a = c / total; c += m.n; return { ym: m.ym, a, b: c / total }; });
+  const el = document.createElement('div'); el.className = 'scrub';
+  el.innerHTML = '<div class="strk"></div><div class="sth"></div><div class="sbub" hidden></div>';
+  $('#view').appendChild(el);
+  const th = el.querySelector('.sth'), bub = el.querySelector('.sbub'), TH = 40;
+  const segAt = (f) => seg.find((s) => f >= s.a && f < s.b) || seg[seg.length - 1];
+  const place = (f, ym) => { const y = f * (el.clientHeight - TH); th.style.top = y + 'px'; if (ym) { bub.textContent = ym.slice(0, 4) + '年' + +ym.slice(5) + '月'; bub.style.top = y + 'px'; } };
+  let drag = false;
+  SCR = () => {
+    if (drag || !document.contains(el)) return;
+    const hs = [...document.querySelectorAll('.mj')]; if (!hs.length) return;
+    let cur = hs[0]; for (const h of hs) { if (h.getBoundingClientRect().top <= 130) cur = h; else break; }
+    const s = seg.find((x) => x.ym === cur.dataset.ym); if (s) place(Math.min(0.999, s.a + 0.0001), '');
   };
-  if ($('#jp')) $('#jp').onclick = () => open('');
-  document.querySelectorAll('.mj').forEach((el) => (el.onclick = () => open(el.dataset.ym)));
+  const fOf = (e) => { const r = el.getBoundingClientRect(); return Math.max(0, Math.min(0.9999, (e.clientY - r.top - TH / 2) / (r.height - TH))); };
+  el.addEventListener('pointerdown', (e) => { drag = true; el.setPointerCapture(e.pointerId); el.classList.add('on'); bub.hidden = false; const f = fOf(e); place(f, segAt(f).ym); });
+  el.addEventListener('pointermove', (e) => { if (!drag) return; const f = fOf(e); place(f, segAt(f).ym); });
+  const end = (e) => {
+    if (!drag) return; drag = false; el.classList.remove('on'); bub.hidden = true;
+    const s = segAt(fOf(e)); location.hash = jumpUrl(mode, filter, s === seg[0] ? '' : monthEnd(s.ym));
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', () => { drag = false; el.classList.remove('on'); bub.hidden = true; });
+  SCR();
 }
 async function viewTimeline(mode, qs) {
   const filter = { kid: qs.get('kid') || '', member: (S.members || []).some((m) => m.id === qs.get('member')) ? qs.get('member') : '', q: qs.get('q') || '', media: ['image', 'video', 'audio'].includes(qs.get('media')) ? qs.get('media') : '', cat: CATS.some((c) => c[0] === qs.get('cat')) ? qs.get('cat') : '', to: /^\d{4}-\d{2}-\d{2}$/.test(qs.get('to') || '') ? qs.get('to') : '' };
@@ -323,12 +331,12 @@ async function viewTimeline(mode, qs) {
     const d = await api(u); total = d.total;
     if (mode === 'home' && !filter.to && $('#tot') && total) $('#tot').textContent = plain ? `已经记下 ${total} 个瞬间` : `${[...(filter.kid && filter.kid !== 'together' ? filter.kid.split(',').map((id) => (kidOf(id) || {}).name) : []), filter.member && (memberOf(filter.member) || {}).name].filter(Boolean).join(' 和 ')}${(filter.kid && filter.kid.includes(',')) || (filter.kid && filter.member) ? ' 同框' : ''}${filter.kid === 'together' ? '双宝日常' : ''}${filter.q ? '「' + filter.q + '」' : ''}${{ image: ' 图片', video: ' 视频', audio: ' 音频' }[filter.media] || ''}：共 ${total} 个瞬间`;
     let h = '';
-    for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span class="mj" data-ym="${p.date.slice(0, 7)}">${m} ▾</span></div>`; } h += cardHtml(p, true); }
+    for (const p of d.items) { const m = monthText(p.date); if (m !== last) { last = m; h += `<div class="month"><span class="mj" data-ym="${p.date.slice(0, 7)}">${m}</span></div>`; } h += cardHtml(p, true); }
     tl.insertAdjacentHTML('beforeend', h); offset += d.items.length; NAV.count = offset;
     $('#more').hidden = offset >= total || !d.items.length;
     if (!total) tl.innerHTML = `<div class="empty">${filter.q || filter.media ? '没有找到符合的记录' : mode === 'diary' ? '还没有日记' : filter.cat ? `还没有「${catOf(filter.cat)[2]}」的记录` : '还没有记录'}${canWrite() ? (filter.cat ? `<br><br><a class="btn" href="#/new?cat=${filter.cat}">记一条${catOf(filter.cat)[2]}</a>` : '<br>点下面的 ＋ 写下第一条吧') : ''}</div>`;
   }
-  bindJump(mode, filter, qs); bindSearch(mode, filter);
+  bindScrub(mode, filter); bindSearch(mode, filter);
   $('#more button').onclick = () => load().catch((e) => toast(e.message));
   await load();
   const rs = NAV.restore; NAV.restore = null;
