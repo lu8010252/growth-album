@@ -34,6 +34,9 @@ public class MainActivity extends BridgeActivity {
         });
       }
     });
+    // 隐藏 WebView 自带的长滚动条（右边那条灰色长条）；页面照常可以滑动，网页里选日期的小滑条不受影响
+    getBridge().getWebView().setVerticalScrollBarEnabled(false);
+    getBridge().getWebView().setHorizontalScrollBarEnabled(false);
     getBridge().getWebView().setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
       try {
         String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
