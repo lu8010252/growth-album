@@ -151,23 +151,32 @@ function aiResultDialog({ heading, controls = '', autoRun = true, runText = '重
   return d;
 }
 function openReview(defKid) {
-  const now = new Date(), opts = [];
-  const ym = (back) => { const x = new Date(now.getFullYear(), now.getMonth() - back, 1); return [`${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`, `${x.getFullYear()}年${x.getMonth() + 1}月`]; };
-  opts.push([ym(1)[0], `上个月（${ym(1)[1]}）`], [ym(0)[0], `本月（${ym(0)[1]}）`]);
-  for (let i = 2; i < 12; i++) opts.push(ym(i));
-  opts.push([String(now.getFullYear()), `今年（${now.getFullYear()}年）`], [String(now.getFullYear() - 1), `去年（${now.getFullYear() - 1}年）`]);
   const sel = (id, label, os, v) => `<label class="field"><span>${label}</span><select id="${id}">${os.map(([a, b]) => `<option value="${esc(a)}" ${a === v ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select></label>`;
-  aiResultDialog({
+  const d = aiResultDialog({
     heading: '成长回顾', autoRun: false, useText: '保存为一条记录',
-    controls: sel('rvk', '给谁写', [['', '全家一起'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], defKid || '') + sel('rvp', '哪段时间', opts, opts[0][0]) +
-      '<p class="note">只会用这段时间的「成长记录」，不会用到任何日记。</p>',
-    run: (d) => api('/api/ai/review', { json: { kidId: $('#rvk', d).value, period: $('#rvp', d).value } }),
+    controls: sel('rvk', '给谁写', [['', '全家一起'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], defKid || '') + sel('rvp', '哪段时间', [['', '加载中…']], '') +
+      '<p class="note">时间列出的是你有成长记录的年和月。只会用这段时间的「成长记录」，不会用到任何日记。</p>',
+    run: (dd) => { if (!$('#rvp', dd).value) throw new Error('还没有可以回顾的成长记录'); return api('/api/ai/review', { json: { kidId: $('#rvk', dd).value, period: $('#rvp', dd).value } }); },
     onUse: async (r) => {
       const m = r.meta;
       const p = await api('/api/posts', { json: { type: 'record', date: m.date, title: r.title, body: r.body, kidIds: m.kidIds.join(','), ai: '1' } });
       toast('已保存'); location.hash = '#/post/' + p.id;
     },
   });
+  // 时间段按实际有记录的年/月来列（最新的在前），再加一个「全部时间」
+  api('/api/posts/months?type=record').then((ms) => {
+    const sp = $('#rvp', d); if (!sp) return;
+    if (!ms.length) { sp.innerHTML = '<option value="">还没有成长记录</option>'; return; }
+    const years = [...new Set(ms.map((m) => m.ym.slice(0, 4)))], o = [];
+    for (const y of years) {
+      const inY = ms.filter((m) => m.ym.startsWith(y));
+      o.push([y, `${y}年 全年（${inY.reduce((s, m) => s + m.n, 0)} 条）`]);
+      for (const m of inY) o.push([m.ym, `　${y}年${+m.ym.slice(5)}月（${m.n} 条）`]);
+    }
+    o.push(['all', '全部时间（所有成长记录）']);
+    sp.innerHTML = o.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join('');
+    sp.value = ms[0].ym;
+  }).catch(() => {});
 }
 
 /* ---------- 大图查看 ---------- */

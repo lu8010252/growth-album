@@ -942,6 +942,7 @@ app.post('/api/ai/polish', needWrite, aiGuard, async (req, res) => {
 });
 
 function periodRange(p) {
+  if (p === 'all') return { from: '0000-01-01', to: '9999-12-31', label: '全部时间', year: true };
   if (/^\d{4}-\d{2}$/.test(p)) {
     const [y, m] = p.split('-').map(Number); if (m < 1 || m > 12) return null;
     return { from: `${p}-01`, to: `${p}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`, label: `${y}年${m}月`, year: false };
