@@ -193,7 +193,7 @@ function openReview(defKid) {
 /* ---------- 大图查看 ---------- */
 const LB = { list: [], i: 0 };
 function openLB(list, i) { LB.list = list; LB.i = i; showLB(); $('#lb').hidden = false; history.pushState({ ...(history.state || {}), lb: 1 }, ''); }
-function showLB() { $('#lb img').src = LB.list[LB.i]; $('#lb .nv').hidden = LB.list.length < 2; }
+function showLB() { LBZ.reset(); $('#lb img').src = LB.list[LB.i]; $('#lb .nv').hidden = LB.list.length < 2; }
 function closeLB() { if ($('#lb').hidden) return; if (history.state && history.state.lb) history.back(); else $('#lb').hidden = true; }
 // 手机返回键：先关大图（不离开当前页），不会直接退出
 window.addEventListener('popstate', () => { if (!$('#lb').hidden && !(history.state && history.state.lb)) $('#lb').hidden = true; });
@@ -202,10 +202,61 @@ $('#lb .p').onclick = () => { LB.i = (LB.i - 1 + LB.list.length) % LB.list.lengt
 $('#lb .n').onclick = () => { LB.i = (LB.i + 1) % LB.list.length; showLB(); };
 $('#lb').addEventListener('click', (e) => { if (e.target.id === 'lb') closeLB(); });
 document.addEventListener('keydown', (e) => { if ($('#lb').hidden) return; if (e.key === 'Escape') closeLB(); if (e.key === 'ArrowLeft') $('#lb .p').click(); if (e.key === 'ArrowRight') $('#lb .n').click(); });
-let tx = 0;
-$('#lb').addEventListener('touchstart', (e) => (tx = e.touches[0].clientX), { passive: true });
-$('#lb').addEventListener('touchend', (e) => { const dx = e.changedTouches[0].clientX - tx; if (Math.abs(dx) > 60 && LB.list.length > 1) (dx > 0 ? $('#lb .p') : $('#lb .n')).click(); });
+// 缩放：双指捏合、双击放大/还原、放大后单指拖动、电脑滚轮；未放大时左右滑动切换
+const LBZ = (() => {
+  const img = $('#lb img'); let sc = 1, x = 0, y = 0, mode = '', sx = 0, sy = 0, ox = 0, oy = 0, d0 = 0, s0 = 1, lastTap = 0, moved = false;
+  const clamp = () => {
+    const r = img.getBoundingClientRect(), W = innerWidth, H = innerHeight, bw = r.width / sc, bh = r.height / sc;
+    const mx = Math.max(0, (bw * sc - W) / 2), my = Math.max(0, (bh * sc - H) / 2);
+    x = Math.min(mx, Math.max(-mx, x)); y = Math.min(my, Math.max(-my, y));
+  };
+  const apply = (anim) => { img.style.transition = anim ? 'transform .2s' : 'none'; img.style.transform = `translate(${x}px,${y}px) scale(${sc})`; };
+  const reset = () => { sc = 1; x = 0; y = 0; mode = ''; apply(false); };
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const zoomAt = (ns, cx, cy) => { ns = Math.min(6, Math.max(1, ns)); const k = ns / sc; const px = cx - innerWidth / 2, py = cy - innerHeight / 2; x = px - (px - x) * k; y = py - (py - y) * k; sc = ns; if (sc === 1) { x = 0; y = 0; } else clamp(); };
+  const lb = $('#lb');
+  lb.addEventListener('touchstart', (e) => {
+    if (e.target.closest('button')) return;
+    if (e.touches.length === 2) { mode = 'pinch'; d0 = dist(e.touches); s0 = sc; }
+    else if (e.touches.length === 1) { mode = 'one'; moved = false; sx = e.touches[0].clientX; sy = e.touches[0].clientY; ox = x; oy = y; }
+  }, { passive: true });
+  lb.addEventListener('touchmove', (e) => {
+    if (e.target.closest('button')) return;
+    if (mode === 'pinch' && e.touches.length === 2) {
+      e.preventDefault(); const t = e.touches; zoomAt(s0 * dist(t) / d0, (t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2); apply(false);
+    } else if (mode === 'one' && e.touches.length === 1) {
+      const dx = e.touches[0].clientX - sx, dy = e.touches[0].clientY - sy;
+      if (Math.abs(dx) + Math.abs(dy) > 8) moved = true;
+      if (sc > 1) { e.preventDefault(); x = ox + dx; y = oy + dy; clamp(); apply(false); }
+    }
+  }, { passive: false });
+  lb.addEventListener('touchend', (e) => {
+    if (e.target.closest('button')) return;
+    if (e.touches.length === 1 && mode === 'pinch') { mode = 'one'; moved = true; sx = e.touches[0].clientX; sy = e.touches[0].clientY; ox = x; oy = y; return; }
+    if (e.touches.length) return;
+    if (sc < 1.05 && sc !== 1) { sc = 1; x = 0; y = 0; apply(true); }
+    const t = e.changedTouches[0];
+    if (mode === 'one') {
+      const dx = t.clientX - sx;
+      if (!moved) {
+        const now = Date.now();
+        if (now - lastTap < 300) { lastTap = 0; if (sc > 1) { sc = 1; x = 0; y = 0; } else zoomAt(2.5, t.clientX, t.clientY); apply(true); }
+        else lastTap = now;
+      } else if (sc === 1 && Math.abs(dx) > 60 && Math.abs(t.clientY - sy) < 90 && LB.list.length > 1) (dx > 0 ? $('#lb .p') : $('#lb .n')).click();
+    }
+    mode = '';
+  });
+  // 电脑：滚轮缩放、双击、放大后拖动
+  lb.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(sc * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX, e.clientY); apply(false); }, { passive: false });
+  img.addEventListener('dblclick', (e) => { if (sc > 1) { sc = 1; x = 0; y = 0; } else zoomAt(2.5, e.clientX, e.clientY); apply(true); });
+  let md = null;
+  img.addEventListener('mousedown', (e) => { if (sc > 1) { md = { sx: e.clientX, sy: e.clientY, ox: x, oy: y }; e.preventDefault(); } });
+  window.addEventListener('mousemove', (e) => { if (md) { x = md.ox + e.clientX - md.sx; y = md.oy + e.clientY - md.sy; clamp(); apply(false); } });
+  window.addEventListener('mouseup', () => (md = null));
+  return { reset };
+})();
 
+// 点背景关闭：放大状态下不误关（背景点击只在未放大时生效）
 /* ---------- 外框 ---------- */
 function chrome(route) {
   const on = !!S.me;
@@ -997,6 +1048,27 @@ async function boot() {
   S.me = d.me; S.kids = d.kids; S.title = d.settings.title; S.needSetup = d.needSetup; S.ai = !!d.ai; S.who = !!d.who; S.members = d.members || []; S.customCats = d.settings.cats || []; setCats(S.customCats);
 }
 window.addEventListener('hashchange', route);
+// 下拉刷新：在页面顶部往下拉，松手后重新取数据（编辑/发布页不启用，避免丢内容）
+(() => {
+  const el = document.createElement('div'); el.id = 'ptr'; el.textContent = '↓ 下拉刷新'; document.body.appendChild(el);
+  let y0 = 0, dy = 0, on = false, busy = false;
+  const okPage = () => { const h = location.hash; return !/^#\/(new|edit|login)/.test(h) && !document.querySelector('dialog[open]') && $('#lb').hidden; };
+  const show = (v, txt) => { el.style.transform = `translate(-50%,${v}px)`; el.style.opacity = Math.min(1, v / 50); if (txt) el.textContent = txt; };
+  document.addEventListener('touchstart', (e) => { on = !busy && e.touches.length === 1 && window.scrollY <= 0 && okPage() && !e.target.closest('input,textarea,select,.scrub'); if (on) { y0 = e.touches[0].clientY; dy = 0; } }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!on) return; dy = e.touches[0].clientY - y0;
+    if (dy <= 0 || window.scrollY > 0) { if (dy <= 0) { on = false; show(-60); } return; }
+    const v = Math.min(80, dy * 0.45); show(v - 40 > 0 ? v : v, v >= 36 ? '↑ 松开刷新' : '↓ 下拉刷新');
+  }, { passive: true });
+  document.addEventListener('touchend', async () => {
+    if (!on) return; on = false;
+    if (dy * 0.45 >= 36) {
+      busy = true; show(44, '刷新中…');
+      try { await boot(); await route(); } catch {} finally { busy = false; show(-60); }
+    } else show(-60);
+  });
+  show(-60);
+})();
 // 给安卓 App 的返回键用：返回 true 表示网页已处理；false 表示已在首页，可以退出
 window.__appBack = () => {
   if (!$('#lb').hidden) { closeLB(); return true; }
