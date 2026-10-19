@@ -36,6 +36,12 @@ jobs:
           R=android/app/src/main/res
           rm -rf $R/mipmap-anydpi-v26
           cp -r icons/mipmap-* $R/
+          # 状态栏/导航栏颜色与页面底色一致（浅色 #FAF5EE，深色 #171210），图标深浅随之切换
+          mkdir -p $R/values-night
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ga_bar">#FAF5EE</color>\n    <bool name="ga_bar_light">true</bool>\n</resources>\n' > $R/values/ga_bar.xml
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ga_bar">#171210</color>\n    <bool name="ga_bar_light">false</bool>\n</resources>\n' > $R/values-night/ga_bar.xml
+          sed -i 's#<item name="android:background">@null</item>#&\n        <item name="android:statusBarColor">@color/ga_bar</item>\n        <item name="android:navigationBarColor">@color/ga_bar</item>\n        <item name="android:windowLightStatusBar">@bool/ga_bar_light</item>\n        <item name="android:windowLightNavigationBar">@bool/ga_bar_light</item>#' $R/values/styles.xml
+          grep -n "ga_bar" $R/values/styles.xml
           npx cap sync android
       - name: 打包两个 APK（普通版 / 固定大小版）
         run: |
