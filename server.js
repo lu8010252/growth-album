@@ -573,6 +573,66 @@ app.post('/api/posts/:id/like', needLogin, (req, res) => {
   const i = p.likes.indexOf(req.user.id); if (i >= 0) p.likes.splice(i, 1); else p.likes.push(req.user.id);
   savePost(p); res.json({ liked: i < 0, likeCount: p.likes.length });
 });
+/* 分享单张照片/视频：生成免登录公开链接 /s/<token>。只能分享「成长记录」里的媒体（日记、时间胶囊不可分享）。
+   token 存在 media.share 上，帖子/媒体删除后自然失效（查不到就 404）。 */
+const escHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const findShared = (token) => {
+  for (const p of posts.values()) {
+    if (isLocked(p) || p.type !== 'record') continue;
+    for (const m of p.media) {
+      if (m.share && m.share.token === token) return { p, m };
+    }
+  }
+  return null;
+};
+app.post('/api/share', needLogin, (req, res) => {
+  const { postId, mediaId } = req.body || {};
+  const p = posts.get(postId);
+  if (!p || !canEdit(req.user, p) || p.type !== 'record' || isLocked(p)) return res.status(403).json({ error: '这条记录不能分享' });
+  const m = p.media.find((x) => x.id === mediaId);
+  if (!m) return res.status(404).json({ error: '没有这个媒体' });
+  if (!m.share) m.share = { token: rand(12), by: req.user.id, at: Date.now() };
+  savePost(p);
+  res.json({ url: '/s/' + m.share.token });
+});
+app.delete('/api/share', needLogin, (req, res) => {
+  const { postId, mediaId } = req.body || {};
+  const p = posts.get(postId);
+  if (!p || !canEdit(req.user, p)) return res.status(403).json({ error: '不能操作这条记录' });
+  const m = p.media.find((x) => x.id === mediaId);
+  if (m && m.share) { delete m.share; savePost(p); }
+  res.json({ ok: true });
+});
+// 免登录公开页：展示被分享的单个媒体（只有标题+日期+作者名，不含正文/评论）
+app.get('/s/:token', (req, res) => {
+  const hit = findShared(req.params.token);
+  if (!hit) return res.status(404).type('html').send('<!doctype html><meta charset=utf-8><title>链接无效</title><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#faf5ee;color:#666"><div style="text-align:center"><h2>链接已失效</h2><p>这张照片可能已被删除，或分享链接有误。</p></div></body>');
+  const { p, m } = hit;
+  const t = escHtml(p.title || (p.body || '').split('\n')[0] || '一张照片');
+  const d = (() => { const [y, mm, dd] = p.date.split('-').map(Number); return `${y}年${mm}月${dd}日`; })();
+  const author = userName(p.authorId);
+  const fileUrl = `/s/${m.share.token}/file`;
+  let mediaTag = '';
+  if (m.kind === 'image') mediaTag = `<img src="${fileUrl}" alt="${t}" style="max-width:100%;max-height:72vh;border-radius:14px;box-shadow:0 8px 30px #0003">`;
+  else if (m.kind === 'video') mediaTag = `<video controls playsinline ${m.poster ? `poster="/s/${m.share.token}/poster"` : ''} src="${fileUrl}" style="max-width:100%;max-height:72vh;border-radius:14px;background:#000"></video>`;
+  else if (m.kind === 'audio') mediaTag = `<audio controls src="${fileUrl}" style="width:100%;margin-top:20px"></audio>`;
+  res.type('html').send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${t}</title><style>*{box-sizing:border-box}body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#faf5ee;margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}.wrap{max-width:920px;width:100%;text-align:center}.title{font-size:22px;font-weight:700;color:#2a2520;margin:0 0 6px}.meta{color:#999;font-size:14px;margin-bottom:20px}.note{color:#bbb;font-size:12px;margin-top:24px}</style></head><body><div class="wrap"><h1 class="title">${t}</h1><div class="meta">${d} · ${escHtml(author)} 分享自「${escHtml(settings.title)}」</div>${mediaTag}<div class="note">这是家人分享的单张照片/视频，更多内容请登录成长册查看。</div></div></body></html>`);
+});
+// 免登录媒体文件流（支持 Range）
+app.get('/s/:token/file', (req, res) => {
+  const hit = findShared(req.params.token);
+  if (!hit) return res.status(404).end();
+  const f = path.join(postDir(hit.p.id), 'files', hit.m.file);
+  res.setHeader('Cache-Control', 'public, max-age=2592000');
+  res.sendFile(f, (err) => { if (err && !res.headersSent) res.status(404).end(); });
+});
+// 免登录视频海报
+app.get('/s/:token/poster', (req, res) => {
+  const hit = findShared(req.params.token);
+  if (!hit || !hit.m.poster) return res.status(404).end();
+  res.setHeader('Cache-Control', 'public, max-age=2592000');
+  res.sendFile(path.join(postDir(hit.p.id), 'files', hit.m.poster), (err) => { if (err && !res.headersSent) res.status(404).end(); });
+});
 app.post('/api/posts/:id/comments', needLogin, (req, res) => {
   const p = getPost(req, res); if (!p) return;
   if (isLocked(p)) return res.status(403).json({ error: '这个胶囊还没到开启的日子' });
@@ -780,20 +840,34 @@ app.post('/api/movie', needLogin, (req, res) => {
   if (movieBusy) return res.status(409).json({ error: '正在生成另一个视频，请等它完成后再试' });
   const b = req.body || {}, kid = kids.find((k) => k.id === b.kid);
   const since = dayOk(b.since), until = dayOk(b.until), secs = Math.min(Math.max(+b.secs || 4, 3), 8);
+  const TEMPLATES = ['classic', 'birthday', 'timeline', 'memorial'];
+  const template = TEMPLATES.includes(b.template) ? b.template : 'classic';
+  let birthday = null;
+  if (template === 'birthday') {
+    const bd = b.birthday || {};
+    if (!String(bd.name || '').trim() || !String(bd.age || '').trim()) return res.status(400).json({ error: '生日模板请填写寿星名字和年龄' });
+    birthday = { name: str(bd.name, 20), age: str(bd.age, 10), date: dayOk(bd.date) || '' };
+  }
   // 自选照片：picks 是用逗号隔开的 key 列表；挑了就只用挑的（按日期顺序），不再抽样
   const picks = typeof b.picks === 'string' && b.picks ? new Set(b.picks.split(',').filter(Boolean)) : null;
   let { slides } = movieSlides(req.user, kid, since, until, picks);
   if (!slides.length) return res.status(400).json({ error: picks ? '挑的照片里没有可用的（可能已被删除）' : '这个范围内没有可用的照片（只用「成长记录」里的照片）' });
   if (slides.length > MOVIE_MAX) slides = Array.from({ length: MOVIE_MAX }, (_, i) => slides[Math.floor((i * slides.length) / MOVIE_MAX)]);
-  for (const [id, j] of movies) if (Date.now() - j.at > 6 * 3600e3) { fsp.rm(j.file, { force: true }).catch(() => {}); movies.delete(id); }
-  const id = rand(6), job = { id, userId: req.user.id, state: 'running', done: 0, total: slides.length + 2, at: Date.now(), file: path.join(MOVIE_DIR, id + '.mp4'),
-    name: `${slug(settings.title) || '成长册'}-${kid ? slug(kid.name) : '全家'}-回顾.mp4` };
+  for (const [id, j] of movies) if (Date.now() - j.at > 6 * 3600e3) {
+    fsp.rm(j.file, { force: true }).catch(() => {});
+    if (j.workDir) fsp.rm(j.workDir, { recursive: true, force: true }).catch(() => {});
+    movies.delete(id);
+  }
+  const id = rand(6), workDir = path.join(MOVIE_DIR, 'w_' + id), job = { id, userId: req.user.id, state: 'running', done: 0, total: slides.length + 2, at: Date.now(), file: path.join(MOVIE_DIR, id + '.mp4'),
+    name: `${slug(settings.title) || '成长册'}-${kid ? slug(kid.name) : '全家'}-${template === 'birthday' ? (birthday.age + '岁生日') : '回顾'}.mp4`, template, birthday, segments: null, workDir };
   movies.set(id, job); movieBusy = true;
   const names = (kid ? [kid] : kids).map((k) => k.name).join('、'), r = `${slides[0].date.slice(0, 7).replace('-', '.')} – ${slides[slides.length - 1].date.slice(0, 7).replace('-', '.')}`;
   fsp.mkdir(MOVIE_DIR, { recursive: true })
-    .then(() => buildMovie(slides, { title: settings.title || '成长册', line2: `${names} 的成长回顾`, line3: r, outFile: job.file, workDir: path.join(MOVIE_DIR, 'w_' + id), secs, onProgress: (d) => { job.done = d; } }))
+    .then(() => buildMovie(slides, { title: settings.title || '成长册', line2: `${names} 的成长回顾`, line3: r, outFile: job.file, workDir, secs, template, birthday,
+      keepSegments: true, onSegments: (arr) => { job.segments = arr; },
+      onProgress: (d) => { job.done = d; } }))
     .then(() => { job.state = 'done'; job.done = job.total; job.size = fs.statSync(job.file).size; })
-    .catch((e) => { console.error('movie', e.message); job.state = 'error'; job.error = '生成失败：' + e.message.slice(0, 160); fsp.rm(path.join(MOVIE_DIR, 'w_' + id), { recursive: true, force: true }).catch(() => {}); })
+    .catch((e) => { console.error('movie', e.message); job.state = 'error'; job.error = '生成失败：' + e.message.slice(0, 160); fsp.rm(workDir, { recursive: true, force: true }).catch(() => {}); })
     .finally(() => { movieBusy = false; });
   res.json({ id, total: slides.length });
 });
@@ -810,7 +884,34 @@ app.get('/api/movie/:id/file', needLogin, (req, res) => {
 app.delete('/api/movie/:id', needLogin, (req, res) => {
   const j = myMovie(req, res); if (!j) return;
   if (j.state === 'running') return res.status(409).json({ error: '还在生成中，做完以后再删' });
-  fsp.rm(j.file, { force: true }).catch(() => {}); movies.delete(j.id); res.json({ ok: true });
+  fsp.rm(j.file, { force: true }).catch(() => {}); if (j.workDir) fsp.rm(j.workDir, { recursive: true, force: true }).catch(() => {}); movies.delete(j.id); res.json({ ok: true });
+});
+// 导出分片包（给 Concat 等剪辑软件用）：每个照片片段一个独立 MP4 + manifest.json + concat 清单 + 导入示例脚本，打包成 zip
+app.get('/api/movie/:id/segments', needLogin, (req, res) => {
+  const j = myMovie(req, res); if (!j) return;
+  if (j.state !== 'done' || !j.segments) return res.status(409).json({ error: '这个视频还没有分片可下载（可能还在生成中，或已过期）' });
+  const manifest = {
+    title: j.name.replace(/\.mp4$/, ''), template: j.template, birthday: j.birthday || null,
+    generatedAt: new Date(j.at).toISOString().slice(0, 10),
+    resolution: '1920x1080', fps: 25, audioSampleRate: 44100, audioChannels: 'stereo',
+    totalSegments: j.segments.length,
+    segments: j.segments.map((s) => ({ file: `seg_${String(s.index).padStart(3, '0')}.mp4`, index: s.index, role: s.role, durationSec: s.duration, subtitle: s.subtitle })),
+    concatHint: '每个片段已内嵌淡入淡出和字幕烧录。在 Concat 里导入全部 seg_*.mp4，按 index 顺序拖到时间轴即可继续剪辑、加音乐、加转场。相邻片段因已有淡入淡出，可不加额外转场。',
+    concatRpcHint: '技术用户可用附带的 concat_import.js 脚本，通过 Concat 的 JSON-RPC API 自动导入（需 Concat 开启 设置 → 自动化 → 脚本与应用）。',
+  };
+  const zip = new ZipArchive({ zlib: { level: 1 } });
+  zip.on('error', (e) => { console.error(e); res.destroy(); });
+  res.attachment(j.name.replace(/\.mp4$/, '-分片包.zip'));
+  zip.pipe(res);
+  // list.txt：ffmpeg concat 清单（按顺序列出分片，方便用 ffmpeg concat 自己串）
+  const listPath = path.join(j.workDir, 'list.txt');
+  if (fs.existsSync(listPath)) zip.file(listPath, { name: 'list.txt', store: true });
+  zip.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
+  zip.file(path.join(__dirname, 'concat_import.js'), { name: 'concat_import.js' });
+  for (const s of j.segments) {
+    if (fs.existsSync(s.file)) zip.file(s.file, { name: `seg_${String(s.index).padStart(3, '0')}.mp4`, store: true });
+  }
+  zip.finalize();
 });
 
 /* ---------- AI 助手 ----------

@@ -130,6 +130,7 @@ dialog::backdrop{background:#0006}
 #lb button{position:absolute;border:0;background:#fff2;color:#fff;width:44px;height:44px;border-radius:50%;font-size:24px;cursor:pointer}
 #lb .x{top:calc(12px + env(safe-area-inset-top));right:12px}
 #lb .p{left:10px}#lb .n{right:10px}
+#lb .sh{bottom:calc(12px + env(safe-area-inset-bottom));left:12px}
 #toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 18px;border-radius:999px;font-size:14px;z-index:30}
 #toast[hidden]{display:none}
 .note{font-size:13px;color:var(--muted)}

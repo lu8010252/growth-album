@@ -1,4 +1,5 @@
 // 回顾视频：把照片做成 1920x1080 的 MP4 幻灯片（标题页 + 每张照片带日期/年龄字幕 + 片尾），生日时可在大屏上直接播放。
+// 支持四种模板：经典简约 / 十周岁生日 / 成长时光线 / 纪念日·节日。
 // 依赖系统里的 ffmpeg（带 drawtext）和一款中文字体（Dockerfile 里装了 fonts-wqy-microhei）。
 const { execFile } = require('child_process');
 const fs = require('fs');
@@ -31,20 +32,131 @@ function ff(args, timeout = 180e3) {
 // 文字都写进文件再用 textfile 读，避免中文/引号/冒号在 filter 里转义
 const q = (s) => String(s).replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
 
+// 模板：经典简约（保留原有风格）
+const TPL = {
+  classic: {
+    intro: (ctx) => ctx.segment(ctx.slides[0].file, [
+      { text: ctx.opts.title, size: 128, y: 'h/2-200' },
+      { text: ctx.opts.line2, size: 60, y: 'h/2+20' },
+      { text: ctx.opts.line3, size: 42, y: 'h/2+120', color: 'white@0.85' },
+    ], 5, { dim: 0.42, frame: false, deco: ctx.accent(H / 2 - 20) }, 'intro'),
+    photo: (ctx, s, i) => ctx.segment(s.file, [
+      { text: s.line1, size: 60, y: 'h-190', box: true },
+      { text: s.line2, size: 42, y: 'h-110', color: 'white@0.9' },
+      { text: `${i + 1} / ${ctx.slides.length}`, size: 30, x: 'w-text_w-48', y: '40', color: 'white@0.7' },
+    ], ctx.secs, { bar: true, out: i % 2 === 0 }, 'photo'),
+    outro: (ctx) => ctx.segment(ctx.slides[ctx.slides.length - 1].file, [
+      { text: '· 完 ·', size: 128, y: 'h/2-150' },
+      { text: ctx.opts.title, size: 52, y: 'h/2+50' },
+      { text: '愿你们平安喜乐，慢慢长大', size: 38, y: 'h/2+140', color: 'white@0.85' },
+    ], 5, { dim: 0.42, frame: false, out: true, deco: ctx.accent(H / 2 + 10) }, 'outro'),
+    interlude: null,
+  },
+  // 十周岁生日主题：大字号生日快乐 + 彩色绶带装饰 + 气球几何造型（不用 emoji，中文字体无彩色字形）
+  birthday: {
+    intro: (ctx) => {
+      const b = ctx.opts.birthday || {};
+      // 彩色绶带：几条彩色横条斜放（用 drawbox 模拟）
+      const ribbons = [
+        `drawbox=x=-40:y=${H / 2 - 280}:w=200:h=14:color=0xff6b6b:t=fill`,
+        `drawbox=x=-20:y=${H / 2 - 250}:w=180:h=14:color=0xffd93d:t=fill`,
+        `drawbox=x=10:y=${H / 2 - 220}:w=160:h=14:color=0x6bcf7f:t=fill`,
+        `drawbox=x=${W - 160}:y=${H / 2 - 280}:w=200:h=14:color=0x4d96ff:t=fill`,
+        `drawbox=x=${W - 180}:y=${H / 2 - 250}:w=180:h=14:color=0xc77dff:t=fill`,
+      ];
+      return ctx.segment(ctx.slides[0].file, [
+        { text: `${b.name || ''} ${b.age || ''}岁`, size: 90, y: 'h/2-240', color: '0xffd93d' },
+        { text: '生日快乐', size: 160, y: 'h/2-100' },
+        { text: b.date || '', size: 56, y: 'h/2+80', color: 'white@0.9' },
+        { text: `${ctx.opts.title} · 成长回顾`, size: 40, y: 'h/2+180', color: 'white@0.7' },
+      ], 6, { dim: 0.45, frame: false, deco: ribbons }, 'intro');
+    },
+    photo: (ctx, s, i) => ctx.segment(s.file, [
+      { text: s.line1, size: 64, y: 'h-200', box: true, color: '0xffd93d' },
+      { text: s.line2, size: 44, y: 'h-110', color: 'white@0.95' },
+      { text: `${i + 1} / ${ctx.slides.length}`, size: 30, x: 'w-text_w-48', y: '40', color: '0xffd93d@0.8' },
+    ], ctx.secs, { bar: true, out: i % 2 === 0 }, 'photo'),
+    outro: (ctx) => {
+      const b = ctx.opts.birthday || {};
+      // 气球造型：几个彩色圆点（drawbox 圆角近似）分布在两侧
+      const balloons = [
+        `drawbox=x=120:y=200:w=70:h=70:color=0xff6b6b@0.85:t=fill`,
+        `drawbox=x=200:y=320:w=55:h=55:color=0xffd93d@0.85:t=fill`,
+        `drawbox=x=${W - 190}:y=200:w=70:h=70:color=0x4d96ff@0.85:t=fill`,
+        `drawbox=x=${W - 270}:y=320:w=55:h=55:color=0x6bcf7f@0.85:t=fill`,
+        `drawbox=x=${W / 2 - 150}:y=120:w=60:h=60:color=0xc77dff@0.8:t=fill`,
+      ];
+      return ctx.segment(ctx.slides[ctx.slides.length - 1].file, [
+        { text: `${b.name || ''} ${b.age || ''}岁`, size: 90, y: 'h/2-220', color: '0xffd93d' },
+        { text: '生日快乐', size: 140, y: 'h/2-60' },
+        { text: '愿健康快乐，永远像今天这样笑', size: 40, y: 'h/2+120', color: 'white@0.9' },
+        { text: ctx.opts.title, size: 36, y: 'h/2+200', color: 'white@0.65' },
+      ], 6, { dim: 0.45, frame: false, out: true, deco: balloons }, 'outro');
+    },
+    interlude: null,
+  },
+  // 成长时光线：按年份分段，跨年时插一个年份大字幕过渡
+  timeline: {
+    intro: (ctx) => ctx.segment(ctx.slides[0].file, [
+      { text: ctx.opts.title, size: 128, y: 'h/2-180' },
+      { text: ctx.opts.line2, size: 60, y: 'h/2+20' },
+      { text: ctx.opts.line3, size: 42, y: 'h/2+120', color: 'white@0.85' },
+      { text: '时光线 · 一步一步长大的日子', size: 36, y: 'h/2+200', color: 'white@0.6' },
+    ], 5, { dim: 0.42, frame: false, deco: ctx.accent(H / 2 - 20) }, 'intro'),
+    photo: (ctx, s, i) => ctx.segment(s.file, [
+      { text: s.line1, size: 60, y: 'h-190', box: true },
+      { text: s.line2, size: 42, y: 'h-110', color: 'white@0.9' },
+      { text: `${i + 1} / ${ctx.slides.length}`, size: 30, x: 'w-text_w-48', y: '40', color: 'white@0.7' },
+    ], ctx.secs, { bar: true, out: i % 2 === 0 }, 'photo'),
+    interlude: (ctx, year) => ctx.segment(ctx.slides[0].file, [
+      { text: String(year), size: 200, y: 'h/2-130', color: 'white@0.95' },
+      { text: '年', size: 60, y: 'h/2+60', color: 'white@0.6' },
+    ], 3, { dim: 0.55, frame: false }, 'interlude'),
+    outro: (ctx) => ctx.segment(ctx.slides[ctx.slides.length - 1].file, [
+      { text: '· 完 ·', size: 128, y: 'h/2-150' },
+      { text: ctx.opts.title, size: 52, y: 'h/2+50' },
+      { text: '时间会走，这些瞬间留下', size: 38, y: 'h/2+140', color: 'white@0.85' },
+    ], 5, { dim: 0.42, frame: false, out: true, deco: ctx.accent(H / 2 + 10) }, 'outro'),
+  },
+  // 纪念日·节日：深底 + 金色字 + 黑底字幕，庄重风格
+  memorial: {
+    intro: (ctx) => ctx.segment(ctx.slides[0].file, [
+      { text: ctx.opts.title, size: 120, y: 'h/2-200', color: '0xd4af37' },
+      { text: ctx.opts.line2, size: 56, y: 'h/2+20', color: '0xd4af37@0.9' },
+      { text: ctx.opts.line3, size: 42, y: 'h/2+120', color: 'white@0.7' },
+    ], 5, { dim: 0.5, frame: false }, 'intro'),
+    photo: (ctx, s, i) => ctx.segment(s.file, [
+      { text: s.line1, size: 60, y: 'h-190', box: true, color: '0xd4af37' },
+      { text: s.line2, size: 42, y: 'h-110', color: 'white@0.9', box: true },
+      { text: `${i + 1} / ${ctx.slides.length}`, size: 30, x: 'w-text_w-48', y: '40', color: '0xd4af37@0.7' },
+    ], ctx.secs, { bar: true, out: i % 2 === 0 }, 'photo'),
+    outro: (ctx) => ctx.segment(ctx.slides[ctx.slides.length - 1].file, [
+      { text: '· 完 ·', size: 120, y: 'h/2-150', color: '0xd4af37' },
+      { text: ctx.opts.title, size: 50, y: 'h/2+50', color: '0xd4af37@0.9' },
+      { text: '愿这份记忆，长长久久', size: 38, y: 'h/2+140', color: 'white@0.7' },
+    ], 5, { dim: 0.5, frame: false, out: true }, 'outro'),
+    interlude: null,
+  },
+};
+
 /**
- * slides: [{ file: 图片绝对路径, line1: 标题(可空), line2: 日期·年龄 }]
- * opts: { title, line2, line3, outFile, workDir, secs, onProgress(done,total) }
+ * slides: [{ file: 图片绝对路径, line1: 标题(可空), line2: 日期·年龄, date, key }]
+ * opts: { title, line2, line3, outFile, workDir, secs, template, birthday, keepSegments, onProgress(done,total), onSegments(segs) }
+ *   template: 'classic' | 'birthday' | 'timeline' | 'memorial'（默认 classic）
+ *   birthday: { name, age, date }（仅 birthday 模板用）
+ *   keepSegments: true 时保留分片（用于 Concat 剪辑导出），通过 onSegments 回调返回带元数据的分片列表
  */
 async function buildMovie(slides, opts) {
   const font = findFont();
   if (!font) { const e = new Error('服务器缺少中文字体，请把镜像更新到最新版'); e.code = 'NO_FONT'; throw e; }
   if (!slides.length) throw new Error('没有可用的照片');
   const secs = Math.min(Math.max(+opts.secs || 4, 2), 10), work = opts.workDir;
+  const template = TPL[opts.template] ? opts.template : 'classic';
   await fsp.mkdir(work, { recursive: true });
   const segs = [];
   let n = 0;
 
-  // 文字层：items = [{ text, size, y, box }]
+  // 文字层：items = [{ text, size, y, box, color, x }]
   const textFilters = async (items, tag) => {
     const out = [];
     for (let i = 0; i < items.length; i++) {
@@ -59,7 +171,7 @@ async function buildMovie(slides, opts) {
 
   // 一个片段：背景=照片放大模糊压暗，前景=照片完整居中（白边相框），缓慢推拉（Ken Burns），叠字，淡入淡出
   const FRAMES = (d) => Math.round(d * FPS);
-  const segment = async (img, items, d, { dim = 0.12, frame = true, bar = false, out: zoomOut = false, deco = null } = {}) => {
+  const segment = async (img, items, d, { dim = 0.12, frame = true, bar = false, out: zoomOut = false, deco = null } = {}, role = 'photo') => {
     const tag = `s${n}`, out = path.join(work, `${tag}.mp4`);
     const tx = await textFilters(items, tag);
     const fr = FRAMES(d), inc = (0.075 / fr).toFixed(6);
@@ -86,38 +198,41 @@ async function buildMovie(slides, opts) {
       '-filter_complex', chain, '-map', '[v]', '-map', '1:a',
       '-r', String(FPS), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '64k', '-t', String(d), out]);
-    segs.push(out); n++;
+    // 附带元数据（用于 Concat 分片包导出）
+    const subtitle = items.filter((it) => it.text).map((it) => String(it.text)).join(' · ');
+    segs.push({ file: out, role, subtitle, duration: d, index: n });
+    n++;
   };
 
-  const total = slides.length + 2;
+  const tpl = TPL[template];
+  const ctx = { segment, slides, secs, opts, accent: (y, w = 300) => [`drawbox=x=${(W - w) / 2}:y=${y}:w=${w}:h=6:color=0xf2705f:t=fill`] };
+  const interludeCount = tpl.interlude ? (new Set(slides.map((s) => s.date.slice(0, 4))).size - 1) : 0;
+  const total = slides.length + 2 + interludeCount;
   const tick = () => { if (opts.onProgress) opts.onProgress(n, total); };
 
-  const accent = (y, w = 300) => [`drawbox=x=${(W - w) / 2}:y=${y}:w=${w}:h=6:color=0xf2705f:t=fill`];
-  await segment(slides[0].file, [
-    { text: opts.title, size: 128, y: 'h/2-200' },
-    { text: opts.line2, size: 60, y: 'h/2+20' },
-    { text: opts.line3, size: 42, y: 'h/2+120', color: 'white@0.85' },
-  ], 5, { dim: 0.42, frame: false, deco: accent(H / 2 - 20) }); tick();
-  let k = 0;
-  for (const s of slides) {
-    k++;
-    await segment(s.file, [
-      { text: s.line1, size: 60, y: 'h-190', box: true },
-      { text: s.line2, size: 42, y: 'h-110', color: 'white@0.9' },
-      { text: `${k} / ${slides.length}`, size: 30, x: 'w-text_w-48', y: '40', color: 'white@0.7' },
-    ], secs, { bar: true, out: k % 2 === 0 }); tick();
+  await tpl.intro(ctx); tick();
+  let prevYear = null;
+  for (let i = 0; i < slides.length; i++) {
+    const s = slides[i];
+    const year = s.date ? s.date.slice(0, 4) : null;
+    if (tpl.interlude && year && prevYear !== null && year !== prevYear) {
+      await tpl.interlude(ctx, year); tick();
+    }
+    if (year) prevYear = year;
+    await tpl.photo(ctx, s, i); tick();
   }
-  await segment(slides[slides.length - 1].file, [
-    { text: '· 完 ·', size: 128, y: 'h/2-150' },
-    { text: opts.title, size: 52, y: 'h/2+50' },
-    { text: '愿你们平安喜乐，慢慢长大', size: 38, y: 'h/2+140', color: 'white@0.85' },
-  ], 5, { dim: 0.42, frame: false, out: true, deco: accent(H / 2 + 10) }); tick();
+  await tpl.outro(ctx); tick();
 
   const list = path.join(work, 'list.txt');
-  await fsp.writeFile(list, segs.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
+  await fsp.writeFile(list, segs.map((f) => `file '${f.file.replace(/'/g, "'\\''")}'`).join('\n'), 'utf8');
   await ff(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', opts.outFile], 600e3);
-  await fsp.rm(work, { recursive: true, force: true }).catch(() => {});
+  if (opts.keepSegments) {
+    // 保留分片目录和 list.txt，供 Concat 分片包导出
+    if (opts.onSegments) opts.onSegments(segs);
+  } else {
+    await fsp.rm(work, { recursive: true, force: true }).catch(() => {});
+  }
   return opts.outFile;
 }
 
-module.exports = { buildMovie, findFont };
+module.exports = { buildMovie, findFont, TEMPLATES: TPL };

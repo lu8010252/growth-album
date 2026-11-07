@@ -191,15 +191,20 @@ function openReview(defKid) {
 }
 
 /* ---------- 大图查看 ---------- */
-const LB = { list: [], i: 0 };
-function openLB(list, i) { LB.list = list; LB.i = i; showLB(); $('#lb').hidden = false; history.pushState({ ...(history.state || {}), lb: 1 }, ''); }
-function showLB() { LBZ.reset(); $('#lb img').src = LB.list[LB.i]; $('#lb .nv').hidden = LB.list.length < 2; }
+const LB = { urls: [], mediaIds: [], postId: null, i: 0 };
+function openLB(info, i) { LB.urls = info.urls; LB.mediaIds = info.mediaIds || []; LB.postId = info.postId || null; LB.i = i; showLB(); $('#lb').hidden = false; history.pushState({ ...(history.state || {}), lb: 1 }, ''); }
+function showLB() { LBZ.reset(); $('#lb img').src = LB.urls[LB.i]; $('#lb .nv').hidden = LB.urls.length < 2; $('#lb .sh').hidden = !(LB.postId && LB.mediaIds[LB.i]); }
 function closeLB() { if ($('#lb').hidden) return; if (history.state && history.state.lb) history.back(); else $('#lb').hidden = true; }
 // 手机返回键：先关大图（不离开当前页），不会直接退出
 window.addEventListener('popstate', () => { if (!$('#lb').hidden && !(history.state && history.state.lb)) $('#lb').hidden = true; });
 $('#lb .x').onclick = closeLB;
-$('#lb .p').onclick = () => { LB.i = (LB.i - 1 + LB.list.length) % LB.list.length; showLB(); };
-$('#lb .n').onclick = () => { LB.i = (LB.i + 1) % LB.list.length; showLB(); };
+$('#lb .p').onclick = () => { LB.i = (LB.i - 1 + LB.urls.length) % LB.urls.length; showLB(); };
+$('#lb .n').onclick = () => { LB.i = (LB.i + 1) % LB.urls.length; showLB(); };
+$('#lb .sh').onclick = async () => {
+  if (!LB.postId || !LB.mediaIds[LB.i]) return;
+  try { const r = await api('/api/share', { json: { postId: LB.postId, mediaId: LB.mediaIds[LB.i] } }); const full = location.origin + r.url; try { await navigator.clipboard.writeText(full); } catch {} toast('分享链接已复制：' + full); }
+  catch (e) { toast(e.message); }
+};
 $('#lb').addEventListener('click', (e) => { if (e.target.id === 'lb') closeLB(); });
 document.addEventListener('keydown', (e) => { if ($('#lb').hidden) return; if (e.key === 'Escape') closeLB(); if (e.key === 'ArrowLeft') $('#lb .p').click(); if (e.key === 'ArrowRight') $('#lb .n').click(); });
 // 缩放：双指捏合、双击放大/还原、放大后单指拖动、电脑滚轮；未放大时左右滑动切换
@@ -242,7 +247,7 @@ const LBZ = (() => {
         const now = Date.now();
         if (now - lastTap < 300) { lastTap = 0; if (sc > 1) { sc = 1; x = 0; y = 0; } else zoomAt(2.5, t.clientX, t.clientY); apply(true); }
         else lastTap = now;
-      } else if (sc === 1 && Math.abs(dx) > 60 && Math.abs(t.clientY - sy) < 90 && LB.list.length > 1) (dx > 0 ? $('#lb .p') : $('#lb .n')).click();
+      } else if (sc === 1 && Math.abs(dx) > 60 && Math.abs(t.clientY - sy) < 90 && LB.urls.length > 1) (dx > 0 ? $('#lb .p') : $('#lb .n')).click();
     }
     mode = '';
   });
@@ -454,10 +459,12 @@ async function viewPost(id, keepY) {
   const [p, people] = await Promise.all([api('/api/posts/' + id), api('/api/people').catch(() => [])]);
   if (p.locked) return viewLocked(p);
   const imgs = p.media.filter((m) => m.kind === 'image');
+  const canShare = p.canEdit && p.type === 'record';
+  const shareLink = (mid) => canShare ? ` <a class="lk" data-sh="${mid}" style="cursor:pointer">分享</a>` : '';
   const media = p.media.map((m) => {
-    if (m.kind === 'image') return `<figure><img loading="lazy" src="${m.view || m.url}" data-i="${imgs.indexOf(m)}" alt=""><figcaption><a href="${m.url}" download="${esc(m.name)}">下载原图 · ${sizeText(m.size)}</a></figcaption></figure>`;
-    if (m.kind === 'audio') return `<figure class="aud"><audio controls preload="none" src="${m.web || m.url}"></audio><figcaption>🎙 ${esc(m.name)} · ${m.status === 'processing' ? '⏳ 正在转成通用格式，先播放原文件 · ' : ''}<a href="${m.url}" download="${esc(m.name)}">下载原音频 · ${sizeText(m.size)}</a></figcaption></figure>`;
-    return `<figure><video controls playsinline preload="metadata" ${m.poster ? `poster="${m.poster}"` : ''} src="${m.web || m.url}"></video><figcaption>${m.status === 'processing' ? '⏳ 正在生成手机兼容版本，先播放原片 · ' : ''}<a href="${m.url}" download="${esc(m.name)}">下载原视频 · ${sizeText(m.size)}</a></figcaption></figure>`;
+    if (m.kind === 'image') return `<figure><img loading="lazy" src="${m.view || m.url}" data-i="${imgs.indexOf(m)}" alt=""><figcaption><a href="${m.url}" download="${esc(m.name)}">下载原图 · ${sizeText(m.size)}</a>${shareLink(m.id)}</figcaption></figure>`;
+    if (m.kind === 'audio') return `<figure class="aud"><audio controls preload="none" src="${m.web || m.url}"></audio><figcaption>🎙 ${esc(m.name)} · ${m.status === 'processing' ? '⏳ 正在转成通用格式，先播放原文件 · ' : ''}<a href="${m.url}" download="${esc(m.name)}">下载原音频 · ${sizeText(m.size)}</a>${shareLink(m.id)}</figcaption></figure>`;
+    return `<figure><video controls playsinline preload="metadata" ${m.poster ? `poster="${m.poster}"` : ''} src="${m.web || m.url}"></video><figcaption>${m.status === 'processing' ? '⏳ 正在生成手机兼容版本，先播放原片 · ' : ''}<a href="${m.url}" download="${esc(m.name)}">下载原视频 · ${sizeText(m.size)}</a>${shareLink(m.id)}</figcaption></figure>`;
   }).join('');
   const bk = (p.kidIds.length ? p.kidIds.map(kidOf).filter((k) => k && k.birthday) : S.kids.filter((k) => k.birthday));
   const others = people.filter((u) => u.id !== S.me.id);
@@ -475,7 +482,13 @@ async function viewPost(id, keepY) {
     <label class="field" id="wu" hidden><span>给谁看</span><select name="wto">${others.map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></label>
     <label class="field" id="wk" hidden><span>留给哪个孩子（TA 满 18 岁后才会在评论里看到）</span><select name="wkid">${bk.map((k) => `<option value="${k.id}">${esc(k.emoji)} ${esc(k.name)}（${addYears(k.birthday, 18)} 满 18 岁）</option>`).join('')}</select></label>
   </details></form></div>`;
-  $('#view').querySelectorAll('.media img').forEach((i) => (i.onclick = () => openLB(imgs.map((m) => m.view || m.url), +i.dataset.i)));
+  $('#view').querySelectorAll('.media img').forEach((i) => (i.onclick = () => openLB({ postId: id, mediaIds: imgs.map((m) => m.id), urls: imgs.map((m) => m.view || m.url) }, +i.dataset.i)));
+  // 详情页的「分享」链接（图片/视频/音频）
+  const doShare = async (mid) => {
+    try { const r = await api('/api/share', { json: { postId: id, mediaId: mid } }); const full = location.origin + r.url; try { await navigator.clipboard.writeText(full); } catch {} toast('分享链接已复制：' + full); }
+    catch (e) { toast(e.message); }
+  };
+  $('#view').querySelectorAll('[data-sh]').forEach((a) => (a.onclick = () => doShare(a.dataset.sh)));
   const again = () => viewPost(id).then(() => window.scrollTo(0, window.scrollY));
   $('#like').onclick = async () => { await api(`/api/posts/${id}/like`, { method: 'POST' }); viewPost(id); };
   if ($('#del')) $('#del').onclick = async () => { if (confirmBox('确定删除这条记录？照片和视频也会一起删除，不能恢复。')) { await api('/api/posts/' + id, { method: 'DELETE' }); toast('已删除'); history.length > 1 ? history.back() : (location.hash = '#/'); } };
@@ -877,7 +890,7 @@ async function viewMe() {
     <div class="row"><button class="btn ghost sm" id="rn">改名字</button><button class="btn ghost sm" id="pw">改密码</button><button class="btn ghost sm" id="lo">退出登录</button></div></div>
   <div class="panel"><h3>📦 导出</h3><p class="note">打包成 zip：里面有原图原视频、每条记录的文字，用浏览器打开 index.html 就能离线翻看。长大后转给她们就用这个。</p><div class="row">${exportBtns}</div></div>
   ${S.ai && ['admin', 'member'].includes(S.me.role) ? '<div class="panel"><h3>✨ 成长回顾</h3><p class="note">让 AI 把选定孩子、某段时间的成长记录整理成一篇回顾，只用「成长记录」，不会用到任何日记。</p><div class="row"><button class="btn ghost sm" id="rv">生成成长回顾</button></div></div>' : ''}
-  <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频，生日聚会时拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。做好的视频暂存在服务器上约 6 小时，用完可以点「🗑 删除」释放空间。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvl"></div></div>
+  <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频。四种模板：经典简约、十周岁生日（填寿星名字和年龄）、成长时光线（按年份分段）、纪念日/节日。生日聚会时拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。做好的视频可下载完整 MP4，也可下载<b>分片包</b>（每个片段一个 MP4 + 清单），导入 <a href="https://github.com/jub0t/concat" target="_blank">Concat</a> 等剪辑软件继续加音乐、加转场。视频暂存约 6 小时，用完点「🗑 删除」释放空间。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvl"></div></div>
   ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
@@ -903,36 +916,48 @@ async function viewMe() {
     clearTimeout(mvList.t); if (!$('#mvl')) return;
     let list; try { list = await api('/api/movie'); } catch { return; }
     const el = $('#mvl'); if (!el) return;
-    el.innerHTML = list.map((j) => `<div class="item" style="margin-top:8px"><div><b>${esc(j.name)}</b><small>${mvTime(j.at)} · ${j.state === 'running' ? `⏳ 生成中 ${j.done} / ${j.total}……` : j.state === 'done' ? '✅ ' + sizeText(j.size) : '⚠️ ' + esc(j.error || '生成失败')}</small></div><div class="row">${j.state === 'done' ? `<a class="lnk" data-play="${j.id}">▶ 播放</a><a class="lnk" href="/api/movie/${j.id}/file" download>⬇ 下载</a>` : ''}${j.state !== 'running' ? `<a class="lnk" data-del="${j.id}">🗑 删除</a>` : ''}</div></div>`).join('');
+    el.innerHTML = list.map((j) => `<div class="item" style="margin-top:8px"><div><b>${esc(j.name)}</b><small>${mvTime(j.at)} · ${j.state === 'running' ? `⏳ 生成中 ${j.done} / ${j.total}……` : j.state === 'done' ? '✅ ' + sizeText(j.size) : '⚠️ ' + esc(j.error || '生成失败')}</small></div><div class="row">${j.state === 'done' ? `<a class="lnk" data-play="${j.id}">▶ 播放</a><a class="lnk" href="/api/movie/${j.id}/file" download>⬇ 下载</a><a class="lnk" href="/api/movie/${j.id}/segments" target="_blank" title="每个片段一个 MP4 + 清单，导入 Concat 等剪辑软件继续编辑">⬇ 分片包</a>` : ''}${j.state !== 'running' ? `<a class="lnk" data-del="${j.id}">🗑 删除</a>` : ''}</div></div>`).join('');
     el.querySelectorAll('[data-play]').forEach((a) => (a.onclick = () => mvPlay(a.dataset.play)));
     el.querySelectorAll('[data-del]').forEach((a) => (a.onclick = async () => { if (!confirmBox('删除这个视频文件？')) return; try { await api('/api/movie/' + a.dataset.del, { method: 'DELETE' }); } catch (e) { toast(e.message); } mvList(); }));
     if (list.some((j) => j.state === 'running')) mvList.t = setTimeout(mvList, 2000);
   };
   $('#mv').onclick = () => formDialog('生成回顾视频', [
     { name: 'kid', label: '谁的', type: 'select', options: [['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], value: '' },
+    { name: 'template', label: '模板', type: 'select', options: [['classic', '经典简约'], ['birthday', '十周岁生日'], ['timeline', '成长时光线'], ['memorial', '纪念日 / 节日']], value: 'classic' },
     { name: 'since', label: '从（可留空）', type: 'date', value: '' },
     { name: 'until', label: '到（可留空）', type: 'date', value: '' },
     { name: 'secs', label: '每张停留', type: 'select', options: [['3', '3 秒'], ['4', '4 秒'], ['5', '5 秒'], ['6', '6 秒'], ['8', '8 秒']], value: '4' }],
-  async (v) => { const r = await api('/api/movie', { json: v }); toast(`开始生成，共 ${r.total} 张照片`); mvList(); }, '开始生成',
+  async (v) => {
+    const body = { kid: v.kid || '', template: v.template, since: v.since || '', until: v.until || '', secs: v.secs, picks: v.picks || '' };
+    if (v.template === 'birthday') body.birthday = { name: v.bd_name || '', age: v.bd_age || '', date: v.bd_date || '' };
+    const r = await api('/api/movie', { json: body }); toast(`开始生成，共 ${r.total} 张照片`); mvList();
+  }, '开始生成',
   '最多取 120 张，超出会均匀抽样。<br><b id="mvinfo">正在统计照片…</b>',
   (dd) => {
     const f = $('form', dd), info = $('#mvinfo', dd); let seq = 0, last = null;
     // 自选照片：picks=null 表示自动挑（每条记录最多 2 张）；否则是勾选的照片 key 集合
     let picks = null, pkLoaded = false;
     f.querySelector('.err').insertAdjacentHTML('beforebegin', `<input type="hidden" name="picks" value="">
+      <div id="mvbd" hidden style="margin-top:4px"><label class="field"><span>寿星名字</span><input name="bd_name" type="text" placeholder="比如：小明" autocomplete="off"></label>
+      <label class="field"><span>几岁</span><input name="bd_age" type="text" placeholder="比如：10" inputmode="numeric" autocomplete="off"></label>
+      <label class="field"><span>生日日期（可留空）</span><input name="bd_date" type="date"></label></div>
       <div class="row" style="margin:6px 0"><button type="button" class="btn ghost sm" id="mvpb">🖼 自己选照片</button><a class="lnk" id="mvpa" hidden>改回自动挑选</a></div>
       <div id="mvpg" hidden><div class="row" style="margin-bottom:6px"><a class="lnk" id="mvall">全选</a><a class="lnk" id="mvnone">清空</a></div><div class="pkgrid" id="mvgrid"></div></div>`);
+    const bdBox = $('#mvbd', dd);
+    f.elements.template.addEventListener('change', () => { bdBox.hidden = f.elements.template.value !== 'birthday'; show(); });
     const fmt = (s) => { const m = Math.floor(s / 60), r = s % 60; return m ? `${m} 分 ${r} 秒` : `${r} 秒`; };
-    const show = () => {   // 片头 4 秒 + 每张停留 + 片尾 4 秒
+    const show = () => {   // 片头片尾时长按模板调整：classic/memorial 5 秒，birthday 6 秒，timeline 另加跨年过渡各 3 秒
       const secs = +f.elements.secs.value || 4;
+      const tpl = f.elements.template.value;
+      const padSecs = tpl === 'birthday' ? 12 : 10;
       if (picks) {
         const n = Math.min(picks.size, 120);
-        info.textContent = n ? `🖼 已自选 ${picks.size} 张` + (picks.size > 120 ? `（超过 120 张，会均匀抽样取 120 张）` : '') + `；每张 ${secs} 秒，视频约 ${fmt(8 + n * secs)}` : '还没有勾选照片';
+        info.textContent = n ? `🖼 已自选 ${picks.size} 张` + (picks.size > 120 ? `（超过 120 张，会均匀抽样取 120 张）` : '') + `；每张 ${secs} 秒，视频约 ${fmt(padSecs + n * secs)}` : '还没有勾选照片';
         return;
       }
       if (!last) return;
       if (!last.used) { info.textContent = '这个范围内没有可用的照片（只用「成长记录」里的照片）'; return; }
-      info.textContent = `📷 共 ${last.photos} 张照片（来自 ${last.records} 条记录）` + (last.photos > last.used ? `，抽样取 ${last.used} 张` : '') + `；每张 ${secs} 秒，视频约 ${fmt(8 + last.used * secs)}`;
+      info.textContent = `📷 共 ${last.photos} 张照片（来自 ${last.records} 条记录）` + (last.photos > last.used ? `，抽样取 ${last.used} 张` : '') + `；每张 ${secs} 秒，视频约 ${fmt(padSecs + last.used * secs)}`;
     };
     const syncPicks = () => { f.elements.picks.value = picks ? [...picks].join(',') : ''; show(); };
     const grid = $('#mvgrid', dd);
