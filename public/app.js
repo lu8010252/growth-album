@@ -890,7 +890,7 @@ async function viewMe() {
     <div class="row"><button class="btn ghost sm" id="rn">改名字</button><button class="btn ghost sm" id="pw">改密码</button><button class="btn ghost sm" id="lo">退出登录</button></div></div>
   <div class="panel"><h3>📦 导出</h3><p class="note">打包成 zip：里面有原图原视频、每条记录的文字，用浏览器打开 index.html 就能离线翻看。长大后转给她们就用这个。</p><div class="row">${exportBtns}</div></div>
   ${S.ai && ['admin', 'member'].includes(S.me.role) ? '<div class="panel"><h3>✨ 成长回顾</h3><p class="note">让 AI 把选定孩子、某段时间的成长记录整理成一篇回顾，只用「成长记录」，不会用到任何日记。</p><div class="row"><button class="btn ghost sm" id="rv">生成成长回顾</button></div></div>' : ''}
-  <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频。四种模板：经典简约、十周岁生日（填寿星名字和年龄）、成长时光线（按年份分段）、纪念日/节日。生日聚会时拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。做好的视频可下载完整 MP4，也可下载<b>分片包</b>（每个片段一个 MP4 + 清单），导入 <a href="https://github.com/jub0t/concat" target="_blank">Concat</a> 等剪辑软件继续加音乐、加转场。视频暂存约 6 小时，用完点「🗑 删除」释放空间。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvl"></div></div>
+  <div class="panel"><h3>🎬 回顾视频（MP4）</h3><p class="note">把成长记录里的照片做成带日期和年龄字幕的 1080p 视频。片头片尾带彩纸装饰；选了单个孩子时，会按年龄分「九岁」「十岁」章节；也可选「生日」样式，片头显示「十岁生日快乐」。做好后拷到 U 盘、投屏或在大屏上直接播放。可选孩子和时间范围；只用照片（每条记录最多 2 张），不含日记和时间胶囊。生成要几分钟，期间可以先去做别的。视频暂存约 6 小时，用完点「🗑 删除」释放空间。</p><div class="row"><button class="btn ghost sm" id="mv">生成视频</button></div><div id="mvl"></div></div>
   ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
@@ -916,14 +916,14 @@ async function viewMe() {
     clearTimeout(mvList.t); if (!$('#mvl')) return;
     let list; try { list = await api('/api/movie'); } catch { return; }
     const el = $('#mvl'); if (!el) return;
-    el.innerHTML = list.map((j) => `<div class="item" style="margin-top:8px"><div><b>${esc(j.name)}</b><small>${mvTime(j.at)} · ${j.state === 'running' ? `⏳ 生成中 ${j.done} / ${j.total}……` : j.state === 'done' ? '✅ ' + sizeText(j.size) : '⚠️ ' + esc(j.error || '生成失败')}</small></div><div class="row">${j.state === 'done' ? `<a class="lnk" data-play="${j.id}">▶ 播放</a><a class="lnk" href="/api/movie/${j.id}/file" download>⬇ 下载</a><a class="lnk" href="/api/movie/${j.id}/segments" target="_blank" title="每个片段一个 MP4 + 清单，导入 Concat 等剪辑软件继续编辑">⬇ 分片包</a>` : ''}${j.state !== 'running' ? `<a class="lnk" data-del="${j.id}">🗑 删除</a>` : ''}</div></div>`).join('');
+    el.innerHTML = list.map((j) => `<div class="item" style="margin-top:8px"><div><b>${esc(j.name)}</b><small>${mvTime(j.at)} · ${j.state === 'running' ? `⏳ 生成中 ${j.done} / ${j.total}……` : j.state === 'done' ? '✅ ' + sizeText(j.size) : '⚠️ ' + esc(j.error || '生成失败')}</small></div><div class="row">${j.state === 'done' ? `<a class="lnk" data-play="${j.id}">▶ 播放</a><a class="lnk" href="/api/movie/${j.id}/file" download>⬇ 下载</a>` : ''}${j.state !== 'running' ? `<a class="lnk" data-del="${j.id}">🗑 删除</a>` : ''}</div></div>`).join('');
     el.querySelectorAll('[data-play]').forEach((a) => (a.onclick = () => mvPlay(a.dataset.play)));
     el.querySelectorAll('[data-del]').forEach((a) => (a.onclick = async () => { if (!confirmBox('删除这个视频文件？')) return; try { await api('/api/movie/' + a.dataset.del, { method: 'DELETE' }); } catch (e) { toast(e.message); } mvList(); }));
     if (list.some((j) => j.state === 'running')) mvList.t = setTimeout(mvList, 2000);
   };
   $('#mv').onclick = () => formDialog('生成回顾视频', [
     { name: 'kid', label: '谁的', type: 'select', options: [['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], value: '' },
-    { name: 'template', label: '模板', type: 'select', options: [['classic', '经典简约'], ['birthday', '十周岁生日'], ['timeline', '成长时光线'], ['memorial', '纪念日 / 节日']], value: 'classic' },
+    { name: 'template', label: '样式', type: 'select', options: [['classic', '普通回顾'], ['birthday', '生日（片头「X岁生日快乐」）']], value: 'classic' },
     { name: 'since', label: '从（可留空）', type: 'date', value: '' },
     { name: 'until', label: '到（可留空）', type: 'date', value: '' },
     { name: 'secs', label: '每张停留', type: 'select', options: [['3', '3 秒'], ['4', '4 秒'], ['5', '5 秒'], ['6', '6 秒'], ['8', '8 秒']], value: '4' }],
@@ -946,10 +946,9 @@ async function viewMe() {
     const bdBox = $('#mvbd', dd);
     f.elements.template.addEventListener('change', () => { bdBox.hidden = f.elements.template.value !== 'birthday'; show(); });
     const fmt = (s) => { const m = Math.floor(s / 60), r = s % 60; return m ? `${m} 分 ${r} 秒` : `${r} 秒`; };
-    const show = () => {   // 片头片尾时长按模板调整：classic/memorial 5 秒，birthday 6 秒，timeline 另加跨年过渡各 3 秒
+    const show = () => {   // 片头片尾各 6 秒；选了单个孩子时每换一个岁数另加 3 秒章节页（这里按 2 页粗估）
       const secs = +f.elements.secs.value || 4;
-      const tpl = f.elements.template.value;
-      const padSecs = tpl === 'birthday' ? 12 : 10;
+      const padSecs = 12 + (f.elements.kid.value ? 6 : 0);
       if (picks) {
         const n = Math.min(picks.size, 120);
         info.textContent = n ? `🖼 已自选 ${picks.size} 张` + (picks.size > 120 ? `（超过 120 张，会均匀抽样取 120 张）` : '') + `；每张 ${secs} 秒，视频约 ${fmt(padSecs + n * secs)}` : '还没有勾选照片';

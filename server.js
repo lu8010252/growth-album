@@ -798,6 +798,7 @@ function ageShort(b, d) {
   if (tm < 0) return ''; const Y = Math.floor(tm / 12), M = tm % 12;
   return Y ? (M ? `${Y}岁${M}个月` : `${Y}岁`) : (M ? `${M}个月` : '不满1个月');
 }
+const ageY = (b, d) => { if (!b || d < b) return null; const x = b.split('-').map(Number), y = d.split('-').map(Number); let a = y[0] - x[0]; if (y[1] < x[1] || (y[1] === x[1] && y[2] < x[2])) a--; return a >= 0 ? a : null; };
 const cut = (t, n) => { const a = [...String(t || '').replace(/\s+/g, ' ').trim()]; return a.length > n ? a.slice(0, n - 1).join('') + '…' : a.join(''); };
 const dateCn = (d) => { const [y, m, dd] = d.split('-').map(Number); return `${y}年${m}月${dd}日`; };
 const MOVIE_MAX = 120;   // 最多多少张照片（超过就均匀抽样），免得视频太长、服务器忙太久
@@ -818,7 +819,7 @@ function movieSlides(user, kid, since, until, picks = null, pickList = false) {
       const key = p.id + ':' + m.id;
       if (picks && !picks.has(key)) continue;
       const f = path.join(postDir(p.id), 'files', m.view || m.file);
-      if (fs.existsSync(f)) { const o = mediaOut(p.id, m); slides.push({ file: f, line1, line2, date: p.date, key, thumb: o.thumb || o.url, title: line1 }); }
+      if (fs.existsSync(f)) { const o = mediaOut(p.id, m); slides.push({ file: f, line1, line2, date: p.date, ageY: kid ? ageY(kid.birthday, p.date) : null, key, thumb: o.thumb || o.url, title: line1 }); }
     }
   }
   return { slides, records: list.length };
@@ -840,10 +841,8 @@ app.post('/api/movie', needLogin, (req, res) => {
   if (movieBusy) return res.status(409).json({ error: '正在生成另一个视频，请等它完成后再试' });
   const b = req.body || {}, kid = kids.find((k) => k.id === b.kid);
   const since = dayOk(b.since), until = dayOk(b.until), secs = Math.min(Math.max(+b.secs || 4, 3), 8);
-  const TEMPLATES = ['classic', 'birthday', 'timeline', 'memorial'];
-  const template = TEMPLATES.includes(b.template) ? b.template : 'classic';
   let birthday = null;
-  if (template === 'birthday') {
+  if (b.template === 'birthday') {
     const bd = b.birthday || {};
     if (!String(bd.name || '').trim() || !String(bd.age || '').trim()) return res.status(400).json({ error: '生日模板请填写寿星名字和年龄' });
     birthday = { name: str(bd.name, 20), age: str(bd.age, 10), date: dayOk(bd.date) || '' };
@@ -859,12 +858,11 @@ app.post('/api/movie', needLogin, (req, res) => {
     movies.delete(id);
   }
   const id = rand(6), workDir = path.join(MOVIE_DIR, 'w_' + id), job = { id, userId: req.user.id, state: 'running', done: 0, total: slides.length + 2, at: Date.now(), file: path.join(MOVIE_DIR, id + '.mp4'),
-    name: `${slug(settings.title) || '成长册'}-${kid ? slug(kid.name) : '全家'}-${template === 'birthday' ? (birthday.age + '岁生日') : '回顾'}.mp4`, template, birthday, segments: null, workDir };
+    name: `${slug(settings.title) || '成长册'}-${kid ? slug(kid.name) : '全家'}-${birthday ? (birthday.age + '岁生日') : '回顾'}.mp4`, birthday, workDir };
   movies.set(id, job); movieBusy = true;
   const names = (kid ? [kid] : kids).map((k) => k.name).join('、'), r = `${slides[0].date.slice(0, 7).replace('-', '.')} – ${slides[slides.length - 1].date.slice(0, 7).replace('-', '.')}`;
   fsp.mkdir(MOVIE_DIR, { recursive: true })
-    .then(() => buildMovie(slides, { title: settings.title || '成长册', line2: `${names} 的成长回顾`, line3: r, outFile: job.file, workDir, secs, template, birthday,
-      keepSegments: true, onSegments: (arr) => { job.segments = arr; },
+    .then(() => buildMovie(slides, { title: settings.title || '成长册', line2: `${names} 的成长回顾`, line3: r, who: kid ? kid.name : '', outFile: job.file, workDir, secs, birthday,
       onProgress: (d) => { job.done = d; } }))
     .then(() => { job.state = 'done'; job.done = job.total; job.size = fs.statSync(job.file).size; })
     .catch((e) => { console.error('movie', e.message); job.state = 'error'; job.error = '生成失败：' + e.message.slice(0, 160); fsp.rm(workDir, { recursive: true, force: true }).catch(() => {}); })
@@ -886,34 +884,6 @@ app.delete('/api/movie/:id', needLogin, (req, res) => {
   if (j.state === 'running') return res.status(409).json({ error: '还在生成中，做完以后再删' });
   fsp.rm(j.file, { force: true }).catch(() => {}); if (j.workDir) fsp.rm(j.workDir, { recursive: true, force: true }).catch(() => {}); movies.delete(j.id); res.json({ ok: true });
 });
-// 导出分片包（给 Concat 等剪辑软件用）：每个照片片段一个独立 MP4 + manifest.json + concat 清单 + 导入示例脚本，打包成 zip
-app.get('/api/movie/:id/segments', needLogin, (req, res) => {
-  const j = myMovie(req, res); if (!j) return;
-  if (j.state !== 'done' || !j.segments) return res.status(409).json({ error: '这个视频还没有分片可下载（可能还在生成中，或已过期）' });
-  const manifest = {
-    title: j.name.replace(/\.mp4$/, ''), template: j.template, birthday: j.birthday || null,
-    generatedAt: new Date(j.at).toISOString().slice(0, 10),
-    resolution: '1920x1080', fps: 25, audioSampleRate: 44100, audioChannels: 'stereo',
-    totalSegments: j.segments.length,
-    segments: j.segments.map((s) => ({ file: `seg_${String(s.index).padStart(3, '0')}.mp4`, index: s.index, role: s.role, durationSec: s.duration, subtitle: s.subtitle })),
-    concatHint: '每个片段已内嵌淡入淡出和字幕烧录。在 Concat 里导入全部 seg_*.mp4，按 index 顺序拖到时间轴即可继续剪辑、加音乐、加转场。相邻片段因已有淡入淡出，可不加额外转场。',
-    concatRpcHint: '技术用户可用附带的 concat_import.js 脚本，通过 Concat 的 JSON-RPC API 自动导入（需 Concat 开启 设置 → 自动化 → 脚本与应用）。',
-  };
-  const zip = new ZipArchive({ zlib: { level: 1 } });
-  zip.on('error', (e) => { console.error(e); res.destroy(); });
-  res.attachment(j.name.replace(/\.mp4$/, '-分片包.zip'));
-  zip.pipe(res);
-  // list.txt：ffmpeg concat 清单（按顺序列出分片，方便用 ffmpeg concat 自己串）
-  const listPath = path.join(j.workDir, 'list.txt');
-  if (fs.existsSync(listPath)) zip.file(listPath, { name: 'list.txt', store: true });
-  zip.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
-  zip.file(path.join(__dirname, 'concat_import.js'), { name: 'concat_import.js' });
-  for (const s of j.segments) {
-    if (fs.existsSync(s.file)) zip.file(s.file, { name: `seg_${String(s.index).padStart(3, '0')}.mp4`, store: true });
-  }
-  zip.finalize();
-});
-
 /* ---------- AI 助手 ----------
    走 OpenAI 兼容的 /chat/completions：API 中转站、Hermes Agent 的 API Server 都可以。
    隐私：成长回顾只用「成长记录」，日记（包括孩子的）一律不参与；
