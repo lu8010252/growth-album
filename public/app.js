@@ -905,39 +905,91 @@ async function viewMe() {
     <p class="note" style="margin-top:8px">${S.ai ? '已启用：发布页有「AI 帮我写」「识别是谁」（需先给孩子传参考照），时间线有「成长回顾」。' : '未启用。填入 OpenAI 兼容的接口地址（API 中转站，或 Hermes Agent 的 API Server）即可。'}<br>成长回顾只用「成长记录」，不会用到任何日记；「帮我写」只发送你主动点击时输入框里的文字。</p></div>
   <div class="panel"><h3>⚙️ 站点</h3><div class="row sp"><span>名称：${esc(S.title)}</span><button class="btn ghost sm" id="st">修改</button></div>
     <p class="note" style="margin-top:10px">已存 ${stats.posts} 条记录 · ${stats.images} 张照片 · ${stats.videos} 个视频 · 占用 ${sizeText(stats.bytes)}${stats.pending ? ' · ⏳ 视频处理中 ' + stats.pending : ''}</p></div>` : ''}`;
-  let picks = new Set();
   const refresh = () => boot().then(viewMe);
-  $('#px').onclick = () => formDialog('导出照片', [
-    { name: 'kid', label: '谁的', type: 'select', options: [['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])], value: '' },
-    { name: 'since', label: '从（可留空）', type: 'date', value: '' },
-    { name: 'until', label: '到（可留空）', type: 'date', value: '' }],
-  async (v) => {
-    if (!picks || !picks.size) throw new Error('还没有勾选照片');
-    const r = await api('/api/photos/export', { json: { kid: v.kid || '', since: v.since || '', until: v.until || '', keys: [...picks] } });
-    const a = document.createElement('a'); a.href = '/api/photos/export/' + r.id; a.download = ''; document.body.appendChild(a); a.click(); a.remove();
-    toast(`开始下载，共 ${r.count} 张照片`);
-  }, '导出',
-  '默认全选；点缩略图可取消。<br><b id="pxinfo">正在加载照片…</b>',
-  (dd) => {
-    const f = $('form', dd), info = $('#pxinfo', dd); let seq = 0, total = 0;
-    f.querySelector('.err').insertAdjacentHTML('beforebegin', `<div style="margin:6px 0"><div class="row" style="margin-bottom:6px"><a class="lnk" id="pxall">全选</a><a class="lnk" id="pxnone">清空</a></div><div class="pkgrid" id="pxgrid"></div></div>`);
-    const grid = $('#pxgrid', dd);
-    const show = () => { info.textContent = total ? `🖼 已选 ${picks.size} / ${total} 张` : '这个范围内没有可导出的照片（只导出「成长记录」里的照片）'; };
-    const setAll = (on) => { grid.querySelectorAll('input').forEach((c) => { c.checked = on; c.parentElement.classList.toggle('on', on); }); picks = new Set(on ? [...grid.querySelectorAll('input')].map((c) => c.dataset.k) : []); show(); };
-    const load = async () => {
-      const my = ++seq, q = new URLSearchParams({ kid: f.elements.kid.value, since: f.elements.since.value, until: f.elements.until.value });
-      grid.innerHTML = '<span class="note">加载中…</span>';
-      let list = []; try { list = await api('/api/photos?' + q); } catch (e) { if (my === seq) grid.innerHTML = `<span class="note">${esc(e.message)}</span>`; return; }
-      if (my !== seq) return;
-      total = list.length; picks = new Set(list.map((p) => p.key));
-      grid.innerHTML = list.length ? list.map((p) => `<label class="pk on" title="${esc(p.date + ' ' + (p.title || ''))}"><img loading="lazy" src="${esc(p.thumb)}" alt=""><input type="checkbox" checked data-k="${esc(p.key)}"><small>${esc(p.date.slice(2))}</small></label>`).join('') : '<span class="note">这个范围内没有可导出的照片</span>';
-      show();
+  // 导出照片：专门的选图界面。多种选法可以叠加：时间段「加入/去掉」、按年、按月整批、按住拖动连选（Shift+点击连选一段）、全选/清空/反选
+  $('#px').onclick = () => {
+    const d = document.createElement('dialog'); d.className = 'phd';
+    d.innerHTML = `<div class="phh"><b>🖼 导出照片</b><button class="btn ghost sm" data-x>关闭</button></div>
+      <div class="phf">
+        <select id="phk">${[['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])].map(([v, n]) => `<option value="${esc(v)}">${esc(n)}</option>`).join('')}</select>
+        <span class="phr"><input type="date" id="phs"> 到 <input type="date" id="phu"></span>
+        <button class="btn sm" id="pha">＋ 加入这段</button><button class="btn ghost sm" id="phd2">－ 去掉这段</button>
+      </div>
+      <div class="phf" id="phy"></div>
+      <div class="phf"><a class="lnk" id="phall">全选</a><a class="lnk" id="phno">清空</a><a class="lnk" id="phinv">反选</a><label class="phb"><input type="checkbox" id="phbr"> 👆 滑动选择<small style="opacity:.7">（手机打开后，手指划过照片连选）</small></label></div>
+      <div class="phg" id="phg"></div>
+      <div class="phz"><span id="phi">正在加载照片…</span><button class="btn" id="phgo">导出</button></div>`;
+    document.body.appendChild(d); d.showModal();
+    d.addEventListener('close', () => d.remove()); $('[data-x]', d).onclick = () => d.close();
+    const g = $('#phg', d), info = $('#phi', d), go = $('#phgo', d);
+    let list = [], nodes = [], picks = new Set(), seq = 0;
+    const refresh = () => {
+      nodes.forEach((n) => n.classList.toggle('on', picks.has(n.dataset.k)));
+      d.querySelectorAll('[data-mh]').forEach((h) => { const ks = list.filter((p) => p.date.slice(0, 7) === h.dataset.mh); const c = ks.filter((p) => picks.has(p.key)).length; h.classList.toggle('on', c === ks.length); h.querySelector('i').textContent = c ? `${c}/${ks.length}` : `${ks.length}`; });
+      d.querySelectorAll('[data-yr]').forEach((h) => { const ks = list.filter((p) => p.date.slice(0, 4) === h.dataset.yr); h.classList.toggle('on', ks.length && ks.every((p) => picks.has(p.key))); });
+      info.textContent = list.length ? `已选 ${picks.size} / ${list.length} 张` : '这个范围内没有可导出的照片（只导出「成长记录」里的照片）';
+      go.disabled = !picks.size;
     };
-    grid.addEventListener('change', (e) => { const c = e.target; if (!c.dataset.k) return; c.parentElement.classList.toggle('on', c.checked); c.checked ? picks.add(c.dataset.k) : picks.delete(c.dataset.k); show(); });
-    $('#pxall', dd).onclick = () => setAll(true); $('#pxnone', dd).onclick = () => setAll(false);
-    let t; f.addEventListener('change', (e) => { if (!['kid', 'since', 'until'].includes(e.target.name)) return; clearTimeout(t); t = setTimeout(load, 200); });
+    const setKeys = (keys, on) => { keys.forEach((k) => (on ? picks.add(k) : picks.delete(k))); refresh(); };
+    const toggleGroup = (ks) => setKeys(ks.map((p) => p.key), !ks.every((p) => picks.has(p.key)));
+    const load = async () => {
+      const my = ++seq; g.innerHTML = '<p class="note" style="padding:12px">加载中…</p>';
+      let r = []; try { r = await api('/api/photos?' + new URLSearchParams({ kid: $('#phk', d).value })); } catch (e) { if (my === seq) g.innerHTML = `<p class="note" style="padding:12px">${esc(e.message)}</p>`; return; }
+      if (my !== seq) return;
+      list = r; const keep = new Set(r.map((p) => p.key)); picks = new Set([...picks].filter((k) => keep.has(k)));
+      const months = [...new Set(r.map((p) => p.date.slice(0, 7)))], years = [...new Set(r.map((p) => p.date.slice(0, 4)))];
+      $('#phy', d).innerHTML = years.length ? `<span class="note" style="margin:0">按年：</span>` + years.map((y) => `<a class="chip" data-yr="${y}">${y}年</a>`).join('') : '';
+      g.innerHTML = months.map((m) => `<div class="phm" data-mh="${m}"><span>${+m.slice(0, 4)}年${+m.slice(5)}月</span><i></i></div><div class="phc">${r.filter((p) => p.date.slice(0, 7) === m).map((p) => `<div class="ph" data-k="${esc(p.key)}" title="${esc(p.date + ' ' + (p.title || ''))}"><img loading="lazy" draggable="false" src="${esc(p.thumb)}" alt=""><small>${esc(p.date.slice(5))}</small></div>`).join('')}</div>`).join('') || '<p class="note" style="padding:12px">这个范围内没有可导出的照片</p>';
+      nodes = [...g.querySelectorAll('.ph')]; nodes.forEach((n, i) => (n.dataset.i = i)); refresh();
+    };
+    $('#phk', d).onchange = load;
+    $('#pha', d).onclick = () => { const s = $('#phs', d).value, u = $('#phu', d).value; const ks = list.filter((p) => (!s || p.date >= s) && (!u || p.date <= u)); if (!ks.length) return toast('这段时间里没有照片'); setKeys(ks.map((p) => p.key), true); toast(`已加入 ${ks.length} 张`); };
+    $('#phd2', d).onclick = () => { const s = $('#phs', d).value, u = $('#phu', d).value; setKeys(list.filter((p) => (!s || p.date >= s) && (!u || p.date <= u)).map((p) => p.key), false); };
+    $('#phall', d).onclick = () => setKeys(list.map((p) => p.key), true);
+    $('#phno', d).onclick = () => { picks.clear(); refresh(); };
+    $('#phinv', d).onclick = () => { picks = new Set(list.filter((p) => !picks.has(p.key)).map((p) => p.key)); refresh(); };
+    d.addEventListener('click', (e) => {
+      const y = e.target.closest('[data-yr]'); if (y) toggleGroup(list.filter((p) => p.date.slice(0, 4) === y.dataset.yr));
+      const m = e.target.closest('[data-mh]'); if (m) toggleGroup(list.filter((p) => p.date.slice(0, 7) === m.dataset.mh));
+    });
+    // 拖动连选：按下的那张决定是「选上」还是「取消」，从按下的那张划到哪张，中间的（按排列顺序）全部跟着变；划到上下边缘会自动滚动
+    let drag = null, anchor = -1, anchorOn = true, handled = false, px = 0, py = 0, raf = 0;
+    const applyRange = (a, b, on) => { const [lo, hi] = a < b ? [a, b] : [b, a]; const s = new Set(drag ? drag.base : picks); for (let i = lo; i <= hi; i++) (on ? s.add(nodes[i].dataset.k) : s.delete(nodes[i].dataset.k)); picks = s; refresh(); };
+    const brush = $('#phbr', d);
+    brush.onchange = () => g.classList.toggle('brush', brush.checked);
+    g.addEventListener('pointerdown', (e) => {
+      handled = false; const el = e.target.closest('.ph'); if (!el) return;
+      if (e.pointerType !== 'mouse' && !brush.checked) return;   // 手指在没开「滑动选择」时：只能点选，页面照常滚动（走下面的 click）
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      handled = true; e.preventDefault();
+      const i = +el.dataset.i;
+      if (e.shiftKey && anchor >= 0) { applyRange(anchor, i, anchorOn); return; }
+      anchorOn = !picks.has(el.dataset.k); anchor = i;
+      drag = { base: new Set(picks), from: i }; applyRange(i, i, anchorOn);
+      px = e.clientX; py = e.clientY;
+      const tick = () => { if (!drag) return; const r = g.getBoundingClientRect(); if (py < r.top + 50) g.scrollTop -= 14; else if (py > r.bottom - 50) g.scrollTop += 14; const t = document.elementFromPoint(px, py)?.closest('.ph'); if (t && drag) applyRange(drag.from, +t.dataset.i, anchorOn); raf = requestAnimationFrame(tick); };
+      raf = requestAnimationFrame(tick);
+    });
+    g.addEventListener('pointermove', (e) => { if (drag) { px = e.clientX; py = e.clientY; } });
+    const end = () => { drag = null; cancelAnimationFrame(raf); };
+    window.addEventListener('pointerup', end); window.addEventListener('pointercancel', end); d.addEventListener('close', () => { end(); window.removeEventListener('pointerup', end); window.removeEventListener('pointercancel', end); });
+    g.addEventListener('click', (e) => {
+      const el = e.target.closest('.ph'); if (!el) return;
+      if (handled) { handled = false; return; }
+      const i = +el.dataset.i; anchorOn = !picks.has(el.dataset.k); anchor = i; setKeys([el.dataset.k], anchorOn);
+    });
+    go.onclick = async () => {
+      if (!picks.size) return;
+      go.disabled = true;
+      try {
+        const r = await api('/api/photos/export', { json: { kid: $('#phk', d).value, keys: [...picks] } });
+        const a = document.createElement('a'); a.href = '/api/photos/export/' + r.id; a.download = ''; document.body.appendChild(a); a.click(); a.remove();
+        toast(`开始下载，共 ${r.count} 张照片`);
+      } catch (e) { toast(e.message); }
+      go.disabled = !picks.size;
+    };
     load();
-  });
+  };
   $('#rn').onclick = () => formDialog('改名字', [{ name: 'name', label: '名字', value: S.me.name }], async (v) => { await api('/api/me', { method: 'PUT', json: v }); await refresh(); });
   $('#pw').onclick = () => formDialog('改密码', [{ name: 'old', label: '旧密码', type: 'password' }, { name: 'pw', label: '新密码（至少 6 位）', type: 'password' }], async (v) => { await api('/api/me/password', { json: v }); toast('密码已修改'); });
   if ($('#sw')) $('#sw').onclick = () => { location.href = 'https://localhost/index.html?reset=1'; };
