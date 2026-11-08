@@ -890,7 +890,7 @@ async function viewMe() {
     <div class="row"><button class="btn ghost sm" id="rn">改名字</button><button class="btn ghost sm" id="pw">改密码</button><button class="btn ghost sm" id="lo">退出登录</button></div></div>
   <div class="panel"><h3>📦 导出</h3><p class="note">打包成 zip：里面有原图原视频、每条记录的文字，用浏览器打开 index.html 就能离线翻看。长大后转给她们就用这个。</p><div class="row">${exportBtns}</div></div>
   ${S.ai && ['admin', 'member'].includes(S.me.role) ? '<div class="panel"><h3>✨ 成长回顾</h3><p class="note">让 AI 把选定孩子、某段时间的成长记录整理成一篇回顾，只用「成长记录」，不会用到任何日记。</p><div class="row"><button class="btn ghost sm" id="rv">生成成长回顾</button></div></div>' : ''}
-  <div class="panel"><h3>🖼 导出照片</h3><p class="note">自己勾选想要的照片，导出成 zip 交给设计师。照片是上传时的<b>原图</b>，文件名按日期命名，例如 <code>2025-06-01_六一儿童节_01.jpg</code>，按文件名排序就是时间顺序；zip 里另附一份「照片清单.csv」（文件名、日期、年龄、标题）。只包含「成长记录」里的照片，不含日记、时间胶囊和视频。</p><div class="row"><button class="btn ghost sm" id="px">选择照片并导出</button></div></div>
+  <div class="panel"><h3>🖼 导出照片和视频</h3><p class="note">自己勾选想要的照片和视频，导出成 zip 交给设计师。文件是上传时的<b>原文件</b>，文件名按日期命名，例如 <code>2025-06-01_六一儿童节_01.jpg</code>，按文件名排序就是时间顺序；zip 里另附一份「素材清单.csv」（文件名、类型、日期、年龄、标题）。只包含「成长记录」里的照片和视频，不含日记、时间胶囊和语音。视频是原片，可能比较大，下载要等一会儿。</p><div class="row"><button class="btn ghost sm" id="px">选择并导出</button></div></div>
   ${IN_APP ? '<div class="panel"><h3>📱 手机 App</h3><p class="note">当前连接的是这台服务器。想换成别的地址：</p><button class="btn ghost sm" id="sw">切换服务器</button></div>' : ''}
   ${admin ? `
   <div class="panel"><div class="row sp"><h3 style="margin:0">👧 孩子</h3><button class="btn sm" id="ak">添加</button></div>
@@ -909,9 +909,9 @@ async function viewMe() {
   // 导出照片：专门的选图界面。多种选法可以叠加：时间段「加入/去掉」、按年、按月整批、按住拖动连选（Shift+点击连选一段）、全选/清空/反选
   $('#px').onclick = () => {
     const d = document.createElement('dialog'); d.className = 'phd';
-    d.innerHTML = `<div class="phh"><b>🖼 导出照片</b><button class="btn ghost sm" data-x>关闭</button></div>
+    d.innerHTML = `<div class="phh"><b>🖼 导出照片和视频</b><button class="btn ghost sm" data-x>关闭</button></div>
       <div class="phf">
-        <select id="phk">${[['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])].map(([v, n]) => `<option value="${esc(v)}">${esc(n)}</option>`).join('')}</select>
+        <select id="pht"><option value="">照片和视频</option><option value="image">只看照片</option><option value="video">只看视频</option></select><select id="phk">${[['', '全部孩子'], ...S.kids.map((k) => [k.id, `${k.emoji} ${k.name}`])].map(([v, n]) => `<option value="${esc(v)}">${esc(n)}</option>`).join('')}</select>
         <span class="phr"><input type="date" id="phs"> 到 <input type="date" id="phu"></span>
         <button class="btn sm" id="pha">＋ 加入这段</button><button class="btn ghost sm" id="phd2">－ 去掉这段</button>
       </div>
@@ -922,26 +922,32 @@ async function viewMe() {
     document.body.appendChild(d); d.showModal();
     d.addEventListener('close', () => d.remove()); $('[data-x]', d).onclick = () => d.close();
     const g = $('#phg', d), info = $('#phi', d), go = $('#phgo', d);
-    let list = [], nodes = [], picks = new Set(), seq = 0;
+    let all = [], list = [], nodes = [], picks = new Set(), seq = 0;
     const refresh = () => {
       nodes.forEach((n) => n.classList.toggle('on', picks.has(n.dataset.k)));
       d.querySelectorAll('[data-mh]').forEach((h) => { const ks = list.filter((p) => p.date.slice(0, 7) === h.dataset.mh); const c = ks.filter((p) => picks.has(p.key)).length; h.classList.toggle('on', c === ks.length); h.querySelector('i').textContent = c ? `${c}/${ks.length}` : `${ks.length}`; });
       d.querySelectorAll('[data-yr]').forEach((h) => { const ks = list.filter((p) => p.date.slice(0, 4) === h.dataset.yr); h.classList.toggle('on', ks.length && ks.every((p) => picks.has(p.key))); });
-      info.textContent = list.length ? `已选 ${picks.size} / ${list.length} 张` : '这个范围内没有可导出的照片（只导出「成长记录」里的照片）';
+      const nv = all.filter((p) => picks.has(p.key) && p.kind === 'video').length;
+      info.textContent = all.length ? `已选 ${picks.size} / ${all.length}${nv ? `（其中视频 ${nv} 个）` : ''}${list.length < all.length ? ' · 当前只显示' + (list.length ? (list[0].kind === 'video' ? '视频' : '照片') : '') : ''}` : '这个范围内没有可导出的照片或视频（只导出「成长记录」里的）';
       go.disabled = !picks.size;
     };
     const setKeys = (keys, on) => { keys.forEach((k) => (on ? picks.add(k) : picks.delete(k))); refresh(); };
     const toggleGroup = (ks) => setKeys(ks.map((p) => p.key), !ks.every((p) => picks.has(p.key)));
+    const render = () => {
+      const t = $('#pht', d).value; list = t ? all.filter((p) => p.kind === t) : all;
+      const months = [...new Set(list.map((p) => p.date.slice(0, 7)))], years = [...new Set(list.map((p) => p.date.slice(0, 4)))];
+      $('#phy', d).innerHTML = years.length ? `<span class="note" style="margin:0">按年：</span>` + years.map((y) => `<a class="chip" data-yr="${y}">${y}年</a>`).join('') : '';
+      g.innerHTML = months.map((m) => `<div class="phm" data-mh="${m}"><span>${+m.slice(0, 4)}年${+m.slice(5)}月</span><i></i></div><div class="phc">${list.filter((p) => p.date.slice(0, 7) === m).map((p) => `<div class="ph${p.kind === 'video' ? ' vd' : ''}" data-k="${esc(p.key)}" title="${esc(p.date + ' ' + (p.title || ''))}">${p.thumb ? `<img loading="lazy" draggable="false" src="${esc(p.thumb)}" alt="">` : '<span class="phn">🎬</span>'}${p.kind === 'video' ? '<b class="phv">🎬 视频</b>' : ''}<small>${esc(p.date.slice(5))}</small></div>`).join('')}</div>`).join('') || '<p class="note" style="padding:12px">这个范围内没有可导出的内容</p>';
+      nodes = [...g.querySelectorAll('.ph')]; nodes.forEach((n, i) => (n.dataset.i = i)); refresh();
+    };
     const load = async () => {
       const my = ++seq; g.innerHTML = '<p class="note" style="padding:12px">加载中…</p>';
       let r = []; try { r = await api('/api/photos?' + new URLSearchParams({ kid: $('#phk', d).value })); } catch (e) { if (my === seq) g.innerHTML = `<p class="note" style="padding:12px">${esc(e.message)}</p>`; return; }
       if (my !== seq) return;
-      list = r; const keep = new Set(r.map((p) => p.key)); picks = new Set([...picks].filter((k) => keep.has(k)));
-      const months = [...new Set(r.map((p) => p.date.slice(0, 7)))], years = [...new Set(r.map((p) => p.date.slice(0, 4)))];
-      $('#phy', d).innerHTML = years.length ? `<span class="note" style="margin:0">按年：</span>` + years.map((y) => `<a class="chip" data-yr="${y}">${y}年</a>`).join('') : '';
-      g.innerHTML = months.map((m) => `<div class="phm" data-mh="${m}"><span>${+m.slice(0, 4)}年${+m.slice(5)}月</span><i></i></div><div class="phc">${r.filter((p) => p.date.slice(0, 7) === m).map((p) => `<div class="ph" data-k="${esc(p.key)}" title="${esc(p.date + ' ' + (p.title || ''))}"><img loading="lazy" draggable="false" src="${esc(p.thumb)}" alt=""><small>${esc(p.date.slice(5))}</small></div>`).join('')}</div>`).join('') || '<p class="note" style="padding:12px">这个范围内没有可导出的照片</p>';
-      nodes = [...g.querySelectorAll('.ph')]; nodes.forEach((n, i) => (n.dataset.i = i)); refresh();
+      all = r; const keep = new Set(r.map((p) => p.key)); picks = new Set([...picks].filter((k) => keep.has(k)));
+      render();
     };
+    $('#pht', d).onchange = render;
     $('#phk', d).onchange = load;
     $('#pha', d).onclick = () => { const s = $('#phs', d).value, u = $('#phu', d).value; const ks = list.filter((p) => (!s || p.date >= s) && (!u || p.date <= u)); if (!ks.length) return toast('这段时间里没有照片'); setKeys(ks.map((p) => p.key), true); toast(`已加入 ${ks.length} 张`); };
     $('#phd2', d).onclick = () => { const s = $('#phs', d).value, u = $('#phu', d).value; setKeys(list.filter((p) => (!s || p.date >= s) && (!u || p.date <= u)).map((p) => p.key), false); };

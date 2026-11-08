@@ -786,7 +786,7 @@ app.get('/api/export', needLogin, async (req, res) => {
   zip.finalize();
 });
 
-/* ---------- 照片导出：自选照片，按日期命名打包成 zip（交给设计师做相册/视频用） ---------- */
+/* ---------- 素材导出：自选照片和视频，按日期命名打包成 zip（交给设计师用） ---------- */
 function ageShort(b, d) {
   if (!b || d < b) return '';
   const x = b.split('-').map(Number), y = d.split('-').map(Number);
@@ -795,7 +795,7 @@ function ageShort(b, d) {
   return Y ? (M ? `${Y}岁${M}个月` : `${Y}岁`) : (M ? `${M}个月` : '不满1个月');
 }
 const dayOk = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '');
-// 只用「成长记录」里的照片：日记、时间胶囊不参与（导出的东西会交给外人），视频文件不算
+// 只用「成长记录」里的照片和视频：日记、时间胶囊不参与（导出的东西会交给外人）；语音不算
 function photoList(user, kid, since, until) {
   const list = [...posts.values()].filter((p) => p.type === 'record' && canView(user, p) && (!kid || p.kidIds.includes(kid.id) || !p.kidIds.length) && (!since || p.date >= since) && (!until || p.date <= until));
   list.sort((a, c) => (a.date < c.date ? -1 : a.date > c.date ? 1 : a.createdAt < c.createdAt ? -1 : 1));
@@ -804,11 +804,12 @@ function photoList(user, kid, since, until) {
     const ks = (kid ? [kid] : p.kidIds.map(kidById).filter(Boolean)).filter((k) => k.birthday);
     const age = ks.map((k) => `${ks.length > 1 || !kid ? k.name + ' ' : ''}${ageShort(k.birthday, p.date)}`).join('、');
     const title = (p.title || (p.body || '').split('\n')[0] || '').replace(/\s+/g, ' ').trim().slice(0, 40);
-    p.media.filter((x) => x.kind === 'image').forEach((m, i) => {
+    const ms = p.media.filter((x) => x.kind === 'image' || x.kind === 'video');
+    ms.forEach((m, i) => {
       const f = path.join(postDir(p.id), 'files', m.file);
       if (!fs.existsSync(f)) return;
       const o = mediaOut(p.id, m);
-      out.push({ key: p.id + ':' + m.id, file: f, date: p.date, title, age, idx: i + 1, count: p.media.filter((x) => x.kind === 'image').length, name: m.name, thumb: o.thumb || o.url });
+      out.push({ key: p.id + ':' + m.id, file: f, kind: m.kind, size: m.size || 0, date: p.date, title, age, idx: i + 1, name: m.name, thumb: m.kind === 'video' ? o.poster : (o.thumb || o.url) });
     });
   }
   return out;
@@ -816,7 +817,7 @@ function photoList(user, kid, since, until) {
 // 选好孩子和日期后，列出所有可选的照片（缩略图）
 app.get('/api/photos', needLogin, (req, res) => {
   const kid = kids.find((k) => k.id === req.query.kid);
-  res.json(photoList(req.user, kid, dayOk(req.query.since), dayOk(req.query.until)).map((s) => ({ key: s.key, date: s.date, title: s.title, age: s.age, thumb: s.thumb })));
+  res.json(photoList(req.user, kid, dayOk(req.query.since), dayOk(req.query.until)).map((s) => ({ key: s.key, kind: s.kind, date: s.date, title: s.title, age: s.age, thumb: s.thumb })));
 });
 // 先 POST 选中的照片拿一个临时编号，再 GET 下载（照片多时 key 太长，不适合放进网址）
 const photoJobs = new Map();
@@ -824,7 +825,7 @@ app.post('/api/photos/export', needLogin, (req, res) => {
   const b = req.body || {}, kid = kids.find((k) => k.id === b.kid);
   const picks = Array.isArray(b.keys) && b.keys.length ? new Set(b.keys.map(String)) : null;
   const items = photoList(req.user, kid, dayOk(b.since), dayOk(b.until)).filter((s) => !picks || picks.has(s.key));
-  if (!items.length) return res.status(400).json({ error: '没有可导出的照片（只导出「成长记录」里的照片）' });
+  if (!items.length) return res.status(400).json({ error: '没有可导出的照片或视频（只导出「成长记录」里的）' });
   for (const [id, j] of photoJobs) if (Date.now() - j.at > 10 * 60e3) photoJobs.delete(id);
   const id = rand(8); photoJobs.set(id, { userId: req.user.id, items, kid, at: Date.now() });
   res.json({ id, count: items.length });
@@ -832,22 +833,22 @@ app.post('/api/photos/export', needLogin, (req, res) => {
 app.get('/api/photos/export/:id', needLogin, (req, res) => {
   const j = photoJobs.get(req.params.id);
   if (!j || j.userId !== req.user.id) return res.status(404).json({ error: '链接已过期，请回到「我的」页重新导出一次' });
-  const used = new Set(), rows = [['文件名', '拍摄日期', '年龄', '标题', '原文件名']];
+  const used = new Set(), rows = [['文件名', '类型', '拍摄日期', '年龄', '标题', '原文件名']];
   const zip = new ZipArchive({ zlib: { level: 1 } });
   zip.on('error', (e) => { console.error(e); res.destroy(); });
-  res.attachment(`${slug(settings.title) || '成长册'}${j.kid ? '-' + slug(j.kid.name) : ''}-照片-${new Date().toISOString().slice(0, 10)}.zip`);
+  res.attachment(`${slug(settings.title) || '成长册'}${j.kid ? '-' + slug(j.kid.name) : ''}-素材-${new Date().toISOString().slice(0, 10)}.zip`);
   zip.pipe(res);
   for (const s of j.items) {
     // 日期_标题_序号.扩展名（同一天同标题有多张时序号从 01 起，保证排序后顺序不乱）
-    const ext = (path.extname(s.file) || '.jpg').toLowerCase(), t = slug(s.title);
+    const ext = (path.extname(s.file) || (s.kind === 'video' ? '.mp4' : '.jpg')).toLowerCase(), t = slug(s.title);
     let name = `${s.date}${t ? '_' + t : ''}_${String(s.idx).padStart(2, '0')}${ext}`, k = 2;
     while (used.has(name.toLowerCase())) name = `${s.date}${t ? '_' + t : ''}_${String(s.idx).padStart(2, '0')}-${k++}${ext}`;
     used.add(name.toLowerCase());
     zip.file(s.file, { name, store: true });
-    rows.push([name, s.date, s.age, s.title, s.name || '']);
+    rows.push([name, s.kind === 'video' ? '视频' : '照片', s.date, s.age, s.title, s.name || '']);
   }
   const csv = '\uFEFF' + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
-  zip.append(csv, { name: '照片清单.csv' });
+  zip.append(csv, { name: '素材清单.csv' });
   zip.finalize();
 });
 
