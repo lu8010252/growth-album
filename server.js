@@ -9,7 +9,6 @@ const fsp = fs.promises;
 const path = require('path');
 const { execFile } = require('child_process');
 const os = require('os');
-const { buildMovie, findFont } = require('./movie');
 
 const PORT = +process.env.PORT || 3000;
 const DATA = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -787,10 +786,7 @@ app.get('/api/export', needLogin, async (req, res) => {
   zip.finalize();
 });
 
-/* ---------- 回顾视频：把照片做成 1080p MP4，生日时可在大屏上播放 ---------- */
-const MOVIE_DIR = path.join(os.tmpdir(), 'growth-album-movies');
-fsp.rm(MOVIE_DIR, { recursive: true, force: true }).catch(() => {});   // 重启后清掉上次遗留的临时文件
-const movies = new Map(); let movieBusy = false;
+/* ---------- 照片导出：自选照片，按日期命名打包成 zip（交给设计师做相册/视频用） ---------- */
 function ageShort(b, d) {
   if (!b || d < b) return '';
   const x = b.split('-').map(Number), y = d.split('-').map(Number);
@@ -798,92 +794,63 @@ function ageShort(b, d) {
   if (tm < 0) return ''; const Y = Math.floor(tm / 12), M = tm % 12;
   return Y ? (M ? `${Y}岁${M}个月` : `${Y}岁`) : (M ? `${M}个月` : '不满1个月');
 }
-const ageY = (b, d) => { if (!b || d < b) return null; const x = b.split('-').map(Number), y = d.split('-').map(Number); let a = y[0] - x[0]; if (y[1] < x[1] || (y[1] === x[1] && y[2] < x[2])) a--; return a >= 0 ? a : null; };
-const cut = (t, n) => { const a = [...String(t || '').replace(/\s+/g, ' ').trim()]; return a.length > n ? a.slice(0, n - 1).join('') + '…' : a.join(''); };
-const dateCn = (d) => { const [y, m, dd] = d.split('-').map(Number); return `${y}年${m}月${dd}日`; };
-const MOVIE_MAX = 120;   // 最多多少张照片（超过就均匀抽样），免得视频太长、服务器忙太久
 const dayOk = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '');
-// 只用「成长记录」：日记、时间胶囊不进视频（视频会拿到大屏上给很多人看）；视频文件不用，只取照片
-// picks：自己挑的照片（key = 记录id:媒体id）；不传就是自动取每条记录最多 2 张。
-// pickList=true 时不挑选，列出范围内所有可用照片，给「自选照片」的缩略图用。
-function movieSlides(user, kid, since, until, picks = null, pickList = false) {
+// 只用「成长记录」里的照片：日记、时间胶囊不参与（导出的东西会交给外人），视频文件不算
+function photoList(user, kid, since, until) {
   const list = [...posts.values()].filter((p) => p.type === 'record' && canView(user, p) && (!kid || p.kidIds.includes(kid.id) || !p.kidIds.length) && (!since || p.date >= since) && (!until || p.date <= until));
   list.sort((a, c) => (a.date < c.date ? -1 : a.date > c.date ? 1 : a.createdAt < c.createdAt ? -1 : 1));
-  const slides = [];
+  const out = [];
   for (const p of list) {
     const ks = (kid ? [kid] : p.kidIds.map(kidById).filter(Boolean)).filter((k) => k.birthday);
-    const line2 = [dateCn(p.date), ...ks.map((k) => `${ks.length > 1 || !kid ? k.name + ' ' : ''}${ageShort(k.birthday, p.date)}`)].join(' · ');
-    const line1 = cut(p.title || (p.body || '').split('\n')[0], 22);
-    const imgs = p.media.filter((x) => x.kind === 'image');
-    for (const m of (picks || pickList ? imgs : imgs.slice(0, 2))) {
-      const key = p.id + ':' + m.id;
-      if (picks && !picks.has(key)) continue;
-      const f = path.join(postDir(p.id), 'files', m.view || m.file);
-      if (fs.existsSync(f)) { const o = mediaOut(p.id, m); slides.push({ file: f, line1, line2, date: p.date, ageY: kid ? ageY(kid.birthday, p.date) : null, key, thumb: o.thumb || o.url, title: line1 }); }
-    }
+    const age = ks.map((k) => `${ks.length > 1 || !kid ? k.name + ' ' : ''}${ageShort(k.birthday, p.date)}`).join('、');
+    const title = (p.title || (p.body || '').split('\n')[0] || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    p.media.filter((x) => x.kind === 'image').forEach((m, i) => {
+      const f = path.join(postDir(p.id), 'files', m.file);
+      if (!fs.existsSync(f)) return;
+      const o = mediaOut(p.id, m);
+      out.push({ key: p.id + ':' + m.id, file: f, date: p.date, title, age, idx: i + 1, count: p.media.filter((x) => x.kind === 'image').length, name: m.name, thumb: o.thumb || o.url });
+    });
   }
-  return { slides, records: list.length };
+  return out;
 }
-// 选好孩子和日期后，先看看有多少张照片（超过上限会均匀抽样），用来估算视频时长
-app.get('/api/movie/preview', needLogin, (req, res) => {
+// 选好孩子和日期后，列出所有可选的照片（缩略图）
+app.get('/api/photos', needLogin, (req, res) => {
   const kid = kids.find((k) => k.id === req.query.kid);
-  const { slides, records } = movieSlides(req.user, kid, dayOk(req.query.since), dayOk(req.query.until));
-  res.json({ photos: slides.length, used: Math.min(slides.length, MOVIE_MAX), max: MOVIE_MAX, records });
+  res.json(photoList(req.user, kid, dayOk(req.query.since), dayOk(req.query.until)).map((s) => ({ key: s.key, date: s.date, title: s.title, age: s.age, thumb: s.thumb })));
 });
-// 「自选照片」：列出这个范围内所有可选的照片（缩略图）
-app.get('/api/movie/photos', needLogin, (req, res) => {
-  const kid = kids.find((k) => k.id === req.query.kid);
-  const { slides } = movieSlides(req.user, kid, dayOk(req.query.since), dayOk(req.query.until), null, true);
-  res.json(slides.map((s) => ({ key: s.key, date: s.date, title: s.title, thumb: s.thumb })));
-});
-app.post('/api/movie', needLogin, (req, res) => {
-  if (!findFont()) return res.status(500).json({ error: '服务器缺少中文字体，请把镜像更新到最新版（docker compose pull && docker compose up -d）' });
-  if (movieBusy) return res.status(409).json({ error: '正在生成另一个视频，请等它完成后再试' });
+// 先 POST 选中的照片拿一个临时编号，再 GET 下载（照片多时 key 太长，不适合放进网址）
+const photoJobs = new Map();
+app.post('/api/photos/export', needLogin, (req, res) => {
   const b = req.body || {}, kid = kids.find((k) => k.id === b.kid);
-  const since = dayOk(b.since), until = dayOk(b.until), secs = Math.min(Math.max(+b.secs || 4, 3), 8);
-  let birthday = null;
-  if (b.template === 'birthday') {
-    const bd = b.birthday || {};
-    if (!String(bd.name || '').trim() || !String(bd.age || '').trim()) return res.status(400).json({ error: '生日模板请填写寿星名字和年龄' });
-    birthday = { name: str(bd.name, 20), age: str(bd.age, 10), date: dayOk(bd.date) || '' };
+  const picks = Array.isArray(b.keys) && b.keys.length ? new Set(b.keys.map(String)) : null;
+  const items = photoList(req.user, kid, dayOk(b.since), dayOk(b.until)).filter((s) => !picks || picks.has(s.key));
+  if (!items.length) return res.status(400).json({ error: '没有可导出的照片（只导出「成长记录」里的照片）' });
+  for (const [id, j] of photoJobs) if (Date.now() - j.at > 10 * 60e3) photoJobs.delete(id);
+  const id = rand(8); photoJobs.set(id, { userId: req.user.id, items, kid, at: Date.now() });
+  res.json({ id, count: items.length });
+});
+app.get('/api/photos/export/:id', needLogin, (req, res) => {
+  const j = photoJobs.get(req.params.id);
+  if (!j || j.userId !== req.user.id) return res.status(404).json({ error: '链接已过期，请回到「我的」页重新导出一次' });
+  const used = new Set(), rows = [['文件名', '拍摄日期', '年龄', '标题', '原文件名']];
+  const zip = new ZipArchive({ zlib: { level: 1 } });
+  zip.on('error', (e) => { console.error(e); res.destroy(); });
+  res.attachment(`${slug(settings.title) || '成长册'}${j.kid ? '-' + slug(j.kid.name) : ''}-照片-${new Date().toISOString().slice(0, 10)}.zip`);
+  zip.pipe(res);
+  for (const s of j.items) {
+    // 日期_标题_序号.扩展名（同一天同标题有多张时序号从 01 起，保证排序后顺序不乱）
+    const ext = (path.extname(s.file) || '.jpg').toLowerCase(), t = slug(s.title);
+    let name = `${s.date}${t ? '_' + t : ''}_${String(s.idx).padStart(2, '0')}${ext}`, k = 2;
+    while (used.has(name.toLowerCase())) name = `${s.date}${t ? '_' + t : ''}_${String(s.idx).padStart(2, '0')}-${k++}${ext}`;
+    used.add(name.toLowerCase());
+    zip.file(s.file, { name, store: true });
+    rows.push([name, s.date, s.age, s.title, s.name || '']);
   }
-  // 自选照片：picks 是用逗号隔开的 key 列表；挑了就只用挑的（按日期顺序），不再抽样
-  const picks = typeof b.picks === 'string' && b.picks ? new Set(b.picks.split(',').filter(Boolean)) : null;
-  let { slides } = movieSlides(req.user, kid, since, until, picks);
-  if (!slides.length) return res.status(400).json({ error: picks ? '挑的照片里没有可用的（可能已被删除）' : '这个范围内没有可用的照片（只用「成长记录」里的照片）' });
-  if (slides.length > MOVIE_MAX) slides = Array.from({ length: MOVIE_MAX }, (_, i) => slides[Math.floor((i * slides.length) / MOVIE_MAX)]);
-  for (const [id, j] of movies) if (Date.now() - j.at > 6 * 3600e3) {
-    fsp.rm(j.file, { force: true }).catch(() => {});
-    if (j.workDir) fsp.rm(j.workDir, { recursive: true, force: true }).catch(() => {});
-    movies.delete(id);
-  }
-  const id = rand(6), workDir = path.join(MOVIE_DIR, 'w_' + id), job = { id, userId: req.user.id, state: 'running', done: 0, total: slides.length + 2, at: Date.now(), file: path.join(MOVIE_DIR, id + '.mp4'),
-    name: `${slug(settings.title) || '成长册'}-${kid ? slug(kid.name) : '全家'}-${birthday ? (birthday.age + '岁生日') : '回顾'}.mp4`, birthday, workDir };
-  movies.set(id, job); movieBusy = true;
-  const names = (kid ? [kid] : kids).map((k) => k.name).join('、'), r = `${slides[0].date.slice(0, 7).replace('-', '.')} – ${slides[slides.length - 1].date.slice(0, 7).replace('-', '.')}`;
-  fsp.mkdir(MOVIE_DIR, { recursive: true })
-    .then(() => buildMovie(slides, { title: settings.title || '成长册', line2: `${names} 的成长回顾`, line3: r, who: kid ? kid.name : '', outFile: job.file, workDir, secs, birthday,
-      onProgress: (d) => { job.done = d; } }))
-    .then(() => { job.state = 'done'; job.done = job.total; job.size = fs.statSync(job.file).size; })
-    .catch((e) => { console.error('movie', e.message); job.state = 'error'; job.error = '生成失败：' + e.message.slice(0, 160); fsp.rm(workDir, { recursive: true, force: true }).catch(() => {}); })
-    .finally(() => { movieBusy = false; });
-  res.json({ id, total: slides.length });
+  const csv = '\uFEFF' + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  zip.append(csv, { name: '照片清单.csv' });
+  zip.finalize();
 });
-const myMovie = (req, res) => { const j = movies.get(req.params.id); if (!j || (j.userId !== req.user.id && req.user.role !== 'admin')) { res.status(404).json({ error: '没有这个视频（可能已过期，重新生成一次即可）' }); return null; } return j; };
-const movieInfo = (j) => ({ id: j.id, state: j.state, done: j.done, total: j.total, size: j.size, error: j.error, name: j.name, at: j.at });
-app.get('/api/movie', needLogin, (req, res) => res.json([...movies.values()].filter((j) => j.userId === req.user.id).sort((a, b) => b.at - a.at).map(movieInfo)));
-app.get('/api/movie/:id', needLogin, (req, res) => { const j = myMovie(req, res); if (j) res.json(movieInfo(j)); });
-app.get('/api/movie/:id/file', needLogin, (req, res) => {
-  const j = myMovie(req, res); if (!j) return;
-  if (j.state !== 'done') return res.status(409).json({ error: '还没生成完' });
-  if (req.query.inline) return res.sendFile(j.file, { headers: { 'Content-Type': 'video/mp4' } });   // 在线播放（支持拖动进度）
-  res.download(j.file, j.name);
-});
-app.delete('/api/movie/:id', needLogin, (req, res) => {
-  const j = myMovie(req, res); if (!j) return;
-  if (j.state === 'running') return res.status(409).json({ error: '还在生成中，做完以后再删' });
-  fsp.rm(j.file, { force: true }).catch(() => {}); if (j.workDir) fsp.rm(j.workDir, { recursive: true, force: true }).catch(() => {}); movies.delete(j.id); res.json({ ok: true });
-});
+
 /* ---------- AI 助手 ----------
    走 OpenAI 兼容的 /chat/completions：API 中转站、Hermes Agent 的 API Server 都可以。
    隐私：成长回顾只用「成长记录」，日记（包括孩子的）一律不参与；
