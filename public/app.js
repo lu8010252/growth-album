@@ -72,7 +72,7 @@ function kidTags(p) {
 /* ---------- 弹窗表单 ---------- */
 /* 孩子的参考照片：给「识别是谁」对照用，每人最多 5 张 */
 function refsDialog(kind, kidId) { // kind: 'kids' | 'members'
-  const d = document.createElement('dialog'); document.body.appendChild(d); d.showModal();
+  const d = document.createElement('dialog'); document.body.appendChild(d); d.showModal(); dlgNav(d);
   d.addEventListener('close', () => d.remove());
   const reload = () => boot().then(viewMe);
   const draw = () => {
@@ -94,6 +94,16 @@ function refsDialog(kind, kidId) { // kind: 'kids' | 'members'
   };
   draw();
 }
+// 弹窗接入「返回键」：打开时压一条历史记录，手机返回键/浏览器后退就是关闭弹窗；backdrop=true 时点空白处也能关闭
+let dlgDepth = 0;
+function dlgNav(d, backdrop = false) {
+  const n = ++dlgDepth; let popped = false;
+  history.pushState({ ...(history.state || {}), dlgN: n }, '');
+  const onPop = () => { if (((history.state && history.state.dlgN) || 0) < n) { popped = true; if (d.open) d.close(); } };
+  window.addEventListener('popstate', onPop);
+  d.addEventListener('close', () => { dlgDepth = Math.max(0, dlgDepth - 1); window.removeEventListener('popstate', onPop); if (!popped && history.state && history.state.dlgN >= n) history.back(); });
+  if (backdrop) { let down = false; d.addEventListener('pointerdown', (e) => { down = e.target === d; }); d.addEventListener('click', (e) => { if (down && e.target === d) d.close(); down = false; }); }
+}
 function formDialog(title, fields, onOk, okText = '保存', note = '', onOpen = null) {
   const d = document.createElement('dialog');
   const fh = fields.map((f) => {
@@ -103,7 +113,7 @@ function formDialog(title, fields, onOk, okText = '保存', note = '', onOpen = 
     return `<label class="field"><span>${f.label}</span><input name="${f.name}" type="${f.type || 'text'}" ${f.inputmode ? `inputmode="${f.inputmode}"` : ''} value="${esc(v)}" placeholder="${esc(f.placeholder || '')}" autocomplete="off"></label>`;
   }).join('');
   d.innerHTML = `<form method="dialog" class="dlg"><h3>${esc(title)}</h3>${note ? `<p class="note">${note}</p>` : ''}${fh}<p class="err" hidden></p><div class="row sp"><button type="button" class="btn ghost" data-x>取消</button><button class="btn">${okText}</button></div></form>`;
-  document.body.appendChild(d); d.showModal();
+  document.body.appendChild(d); d.showModal(); dlgNav(d);
   $('[data-x]', d).onclick = () => d.close();
   d.addEventListener('close', () => d.remove());
   if (onOpen) onOpen(d);
@@ -127,7 +137,7 @@ function aiResultDialog({ heading, controls = '', autoRun = true, runText = '重
   d.innerHTML = `<div class="dlg"><h3>✨ ${esc(heading)}</h3>${controls}<p class="note" id="ains"></p>
     <div id="airs" hidden><label class="field"><span>标题</span><input type="text" id="ait"></label><label class="field"><span>正文（可以直接改）</span><textarea id="aib" rows="12"></textarea></label></div>
     <p class="err" hidden></p><div class="row sp"><button type="button" class="btn ghost" data-x>关闭</button><span class="row"><button type="button" class="btn ghost" id="aigo">${autoRun ? runText : '生成'}</button><button type="button" class="btn" id="aiuse" hidden>${useText}</button></span></div></div>`;
-  document.body.appendChild(d); d.showModal();
+  document.body.appendChild(d); d.showModal(); dlgNav(d);
   const err = $('.err', d), note = $('#ains', d);
   d.addEventListener('close', () => d.remove());
   $('[data-x]', d).onclick = () => d.close();
@@ -919,7 +929,7 @@ async function viewMe() {
       <div class="phf"><a class="lnk" id="phall">全选</a><a class="lnk" id="phno">清空</a><a class="lnk" id="phinv">反选</a><label class="phb"><input type="checkbox" id="phbr"> 👆 滑动选择<small style="opacity:.7">（手机打开后，手指划过照片连选）</small></label></div>
       <div class="phg" id="phg"></div>
       <div class="phz"><span id="phi">正在加载照片…</span><button class="btn" id="phgo">导出</button></div>`;
-    document.body.appendChild(d); d.showModal();
+    document.body.appendChild(d); d.showModal(); dlgNav(d, true);
     d.addEventListener('close', () => d.remove()); $('[data-x]', d).onclick = () => d.close();
     const g = $('#phg', d), info = $('#phi', d), go = $('#phgo', d);
     let all = [], list = [], nodes = [], picks = new Set(), seq = 0;
